@@ -1,16 +1,22 @@
-"""Build dist\\RouterChecker.exe, a single windowed .exe of the desktop app.
+"""Build dist\\RouterChecker.exe, a single windowed .exe of the desktop app, and
+its installer dist\\RouterChecker-<version>-setup.exe.
 
-    uv run --group build python packaging/build.py
+    uv run --group build python packaging/build.py [--exe-only]
 
 The icon comes from the app's own icon drawing and the file version from
 ``router_checker.__version__``; both are written to build\\ first. The console
-harness (``router-checker``) is not part of the exe.
+harness (``router-checker``) is not part of the exe. The installer needs
+Inno Setup 6 (``winget install JRSoftware.InnoSetup``); without it only the
+exe is built.
 """
 
 from __future__ import annotations
 
+import argparse
 import os
+import shutil
 import struct
+import subprocess
 import sys
 from pathlib import Path
 
@@ -85,7 +91,45 @@ def write_version_file(path: Path) -> None:
     )
 
 
+def find_iscc() -> Path | None:
+    """Inno Setup's compiler: on PATH, or where its installer puts it."""
+    found = shutil.which("iscc")
+    if found:
+        return Path(found)
+    env = os.environ
+    folders = [Path(env["LOCALAPPDATA"]) / "Programs"] if env.get("LOCALAPPDATA") else []
+    folders += [Path(env[name]) for name in ("ProgramFiles(x86)", "ProgramFiles") if env.get(name)]
+    for folder in folders:  # per-user install first, then for all users
+        candidate = folder / "Inno Setup 6" / "ISCC.exe"
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def build_installer(exe: Path, icon: Path) -> Path | None:
+    iscc = find_iscc()
+    if iscc is None:
+        print("\nInno Setup 6 not found, so no installer (winget install JRSoftware.InnoSetup).")
+        return None
+    subprocess.run(
+        [
+            str(iscc),
+            "/Q",
+            f"/DAppVersion={__version__}",
+            f"/DExe={exe}",
+            f"/DIcon={icon}",
+            f"/DOutputDir={DIST}",
+            str(ROOT / "packaging" / "installer.iss"),
+        ],
+        check=True,
+    )
+    return DIST / f"{NAME}-{__version__}-setup.exe"
+
+
 def main() -> int:
+    parser = argparse.ArgumentParser(description="Build the exe and its installer.")
+    parser.add_argument("--exe-only", action="store_true", help="skip the installer")
+    args = parser.parse_args()
     BUILD.mkdir(exist_ok=True)
     icon, version = BUILD / f"{NAME}.ico", BUILD / "version.txt"
     write_icon(icon)
@@ -116,6 +160,10 @@ def main() -> int:
     )
     exe = DIST / f"{NAME}.exe"
     print(f"\nBuilt {exe} ({exe.stat().st_size / 1_000_000:.0f} MB), version {__version__}")
+    if not args.exe_only:
+        setup = build_installer(exe, icon)
+        if setup is not None:
+            print(f"Built {setup} ({setup.stat().st_size / 1_000_000:.0f} MB)")
     return 0
 
 
