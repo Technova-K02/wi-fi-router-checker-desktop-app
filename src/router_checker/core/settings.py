@@ -228,7 +228,8 @@ def load_settings(path: Path) -> Settings | None:
     """Settings from ``path``, or None if the file does not exist yet."""
     if not path.exists():
         return None
-    return settings_from_json(json.loads(path.read_text(encoding="utf-8")))
+    # utf-8-sig: also accept a file an editor saved with a byte-order mark.
+    return settings_from_json(json.loads(path.read_text(encoding="utf-8-sig")))
 
 
 def save_settings(path: Path, settings: Settings) -> None:

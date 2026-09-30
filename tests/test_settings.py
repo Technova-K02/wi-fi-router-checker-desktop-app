@@ -155,3 +155,9 @@ def test_auto_switch_is_off_by_default_and_saved(tmp_path) -> None:
     path = tmp_path / "s.json"
     save_settings(path, Settings(auto_switch=True))
     assert load_settings(path).auto_switch
+
+
+def test_a_file_saved_with_a_byte_order_mark_loads(tmp_path) -> None:
+    path = tmp_path / "s.json"
+    path.write_text(json.dumps({"interval_min": 15}), encoding="utf-8-sig")
+    assert load_settings(path).interval_min == 15
