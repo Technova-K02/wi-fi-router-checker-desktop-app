@@ -13,16 +13,19 @@ uv sync
 ## Desktop app
 
 ```powershell
-uv run router-checker-app                # no console window; lives in the tray
-uv run python -m router_checker.ui       # same app with a console, for debugging
+.venv\Scripts\router-checker-app         # starts the app; the terminal is free right away
+uv run router-checker-app                # same, but the terminal waits until you exit
+uv run python -m router_checker.ui       # with a console for log output, for debugging
 ```
 
 - The first start opens a 3-step setup: location access, your routers, the check interval.
-- Closing the window keeps the app running in the tray. Exit from the tray menu
-  (right-click the icon). Windows 11 may put the icon in the hidden-icons area (^);
-  drag it onto the taskbar to keep it visible.
+- Closing the window keeps the app running in the tray. To stop it, click **Exit** on
+  the dashboard (Ctrl+Q) or right-click the tray icon and choose Exit. Ctrl+C in the
+  terminal doesn't reach it, because it's a windowed app without a console.
+- Windows 11 may put the tray icon in the hidden-icons area (^); drag it onto the
+  taskbar to keep it visible.
 - Left-click the tray icon for the flyout, double-click to open the window.
-- Shortcuts: F5 check now, Ctrl+1 to Ctrl+4 switch pages, Ctrl+N add a router.
+- Shortcuts: F5 check now, Ctrl+1 to Ctrl+4 switch pages, Ctrl+N add a router, Ctrl+Q exit.
 - Starting the app again brings the running window to the front.
 
 ## Console harness

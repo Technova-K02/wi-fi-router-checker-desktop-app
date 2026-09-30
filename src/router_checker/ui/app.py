@@ -148,6 +148,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         app.quit()
 
     tray.exitRequested.connect(quit_app)
+    window.exitRequested.connect(quit_app)
 
     if not settings.first_run_done:
         window.show()

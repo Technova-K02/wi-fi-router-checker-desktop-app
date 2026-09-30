@@ -326,6 +326,7 @@ class RouterCard(FocusCard):
 class DashboardPage(Page):
     addRouterRequested = Signal(object)  # prefilled Router or None
     openRouterRequested = Signal(str)
+    exitRequested = Signal()
 
     def __init__(self, controller: AppController, parent: QWidget | None = None) -> None:
         super().__init__("dashboardPage", "Dashboard", parent)
@@ -339,9 +340,13 @@ class DashboardPage(Page):
         self.check_button = PrimaryPushButton(FIF.SYNC, "Check now", self.view)
         self.check_button.setToolTip("Test the current router now (F5)")
         self.check_button.clicked.connect(controller.check_now)
+        self.exit_button = PushButton(FIF.POWER_BUTTON, "Exit", self.view)
+        self.exit_button.setToolTip("Stop monitoring and close Router Checker (Ctrl+Q)")
+        self.exit_button.clicked.connect(lambda: self.exitRequested.emit())  # drop "checked"
         self.header.addWidget(self.spinner, 0, Qt.AlignmentFlag.AlignVCenter)
         self.header.addWidget(self.when, 0, Qt.AlignmentFlag.AlignVCenter)
         self.header.addWidget(self.check_button, 0, Qt.AlignmentFlag.AlignVCenter)
+        self.header.addWidget(self.exit_button, 0, Qt.AlignmentFlag.AlignVCenter)
 
         self.location_bar = InfoBar(
             InfoBarIcon.WARNING,

@@ -155,7 +155,10 @@ class TrayIcon(QObject):
             ]
         )
         self.menu.addSeparator()
-        self.menu.addAction(Action(FIF.CLOSE, "Exit", triggered=self.exitRequested.emit))
+        # Not triggered=self.exitRequested.emit: "triggered" also passes a "checked" flag.
+        self.menu.addAction(
+            Action(FIF.POWER_BUTTON, "Exit", triggered=lambda: self.exitRequested.emit())
+        )
         self.tray.setContextMenu(self.menu)
         self.tray.activated.connect(self._on_activated)
         self.tray.messageClicked.connect(window.bring_to_front)

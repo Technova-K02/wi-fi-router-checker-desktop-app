@@ -1,6 +1,10 @@
 """Build the real windows with the fake network and render them in both themes."""
 
+from dataclasses import replace
+
 import pytest
+from PySide6.QtCore import Qt, QTimer
+from PySide6.QtGui import QAction, QKeySequence, QShortcut
 from qfluentwidgets import Theme, setTheme
 
 from fakes import GW, FakeWatcher, gateway_info, network_parts, sample_routers
@@ -12,7 +16,7 @@ from router_checker.ui.dialogs.first_run import FirstRunDialog
 from router_checker.ui.dialogs.router_dialog import RouterDialog
 from router_checker.ui.main_window import MainWindow
 from router_checker.ui.style import app_icon, status_icon
-from router_checker.ui.tray import TrayFlyoutView
+from router_checker.ui.tray import TrayFlyoutView, TrayIcon
 
 TIMEOUT = 5000
 
@@ -131,6 +135,49 @@ def test_first_run_steps(qtbot, app_parts) -> None:
     assert dialog.validate()  # last step closes
     assert dialog.interval_min() == 5
     dialog.reject()
+
+
+def click_menu_item(menu, text: str) -> None:
+    """Click a tray menu entry the way the mouse does: through the menu's item list."""
+    view = menu.view
+    for row in range(view.count()):
+        action = view.item(row).data(Qt.ItemDataRole.UserRole)
+        if isinstance(action, QAction) and action.text() == text:
+            view.itemClicked.emit(view.item(row))
+            return
+    raise AssertionError(f"no menu item {text!r}")
+
+
+def test_tray_menu_items_work(qtbot, app_parts) -> None:
+    controller, window, _ = app_parts
+    tray = TrayIcon(controller, window)
+    with qtbot.waitSignal(tray.exitRequested, timeout=TIMEOUT):
+        click_menu_item(tray.menu, "Exit")
+    with qtbot.waitSignal(controller.checkFinished, timeout=TIMEOUT):
+        click_menu_item(tray.menu, "Check now")
+
+
+def test_exit_button_and_shortcut(qtbot, app_parts) -> None:
+    _, window, _ = app_parts
+    with qtbot.waitSignal(window.exitRequested, timeout=TIMEOUT):
+        window.dashboard.exit_button.click()
+    shortcut = next(s for s in window.findChildren(QShortcut) if s.key() == QKeySequence("Ctrl+Q"))
+    with qtbot.waitSignal(window.exitRequested, timeout=TIMEOUT):
+        shortcut.activated.emit()
+
+
+def test_exiting_during_setup_shows_setup_again_next_time(qtbot, app_parts) -> None:
+    controller, window, _ = app_parts
+    controller.update_settings(replace(controller.settings, first_run_done=False))
+    window.bring_to_front = lambda: None  # keep the window off the screen
+
+    def exit_during_setup() -> None:
+        window.prepare_quit()
+        window.findChild(FirstRunDialog).reject()
+
+    QTimer.singleShot(300, exit_during_setup)
+    window.run_first_run()
+    assert not controller.settings.first_run_done
 
 
 def test_flyout_and_icons_render(qtbot, app_parts) -> None:

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QCloseEvent, QKeySequence, QShortcut, QShowEvent
 from qfluentwidgets import FluentIcon as FIF
 from qfluentwidgets import (
@@ -26,6 +26,8 @@ from router_checker.ui.style import app_icon
 
 
 class MainWindow(FluentWindow):
+    exitRequested = Signal()  # the dashboard's Exit button or Ctrl+Q
+
     def __init__(self, controller: AppController) -> None:
         super().__init__()
         self.controller = controller
@@ -54,6 +56,7 @@ class MainWindow(FluentWindow):
 
         self.dashboard.addRouterRequested.connect(self.add_router)
         self.dashboard.openRouterRequested.connect(self.show_router)
+        self.dashboard.exitRequested.connect(self.exitRequested)
         self.routers.addRequested.connect(lambda: self.add_router(None))
         self.routers.editRequested.connect(self.edit_router)
         self.routers.deleteRequested.connect(self.delete_router)
@@ -67,6 +70,7 @@ class MainWindow(FluentWindow):
         QShortcut(QKeySequence(Qt.Key.Key_F5), self, activated=controller.check_now)
         QShortcut(QKeySequence("Ctrl+R"), self, activated=controller.check_now)
         QShortcut(QKeySequence("Ctrl+N"), self, activated=lambda: self.add_router(None))
+        QShortcut(QKeySequence("Ctrl+Q"), self, activated=self.exitRequested.emit)
 
     # --- window behavior --------------------------------------------------------
 
@@ -149,7 +153,8 @@ class MainWindow(FluentWindow):
         self.bring_to_front()
         dialog = FirstRunDialog(self.controller, lambda: self.add_router(None), self)
         dialog.exec()
-        self.controller.complete_first_run(dialog.interval_min())
+        if not self._quitting:  # exiting during setup shows the setup again next time
+            self.controller.complete_first_run(dialog.interval_min())
 
     def show_warning(self, title: str, text: str) -> None:
         InfoBar.warning(title, text, duration=-1, position=InfoBarPosition.TOP, parent=self)
