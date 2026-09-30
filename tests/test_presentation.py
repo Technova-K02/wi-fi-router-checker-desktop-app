@@ -1,5 +1,5 @@
 from dataclasses import replace
-from datetime import UTC, datetime, timedelta, timezone
+from datetime import UTC, datetime, time, timedelta, timezone
 
 import pytest
 
@@ -18,6 +18,7 @@ from router_checker.core.models import (
     BssLoad,
     BusyLevel,
     Busyness,
+    HourlyAggregate,
     InstabilityReason,
     Recommendation,
     Router,
@@ -26,6 +27,7 @@ from router_checker.core.models import (
     Verdict,
     WifiConnection,
 )
+from router_checker.core.popularity import popular_times
 from router_checker.core.presentation import (
     DASH,
     TOOLTIP_MAX,
@@ -40,6 +42,9 @@ from router_checker.core.presentation import (
     fmt_pct,
     group_networks,
     overall_status,
+    popular_cell_text,
+    popular_times_summary,
+    quiet_hours_text,
     reasons_text,
     recommendation_text,
     score_text,
@@ -48,6 +53,7 @@ from router_checker.core.presentation import (
     tray_tooltip,
     verdict_level,
 )
+from router_checker.core.quiet_hours import QuietHours
 from router_checker.core.settings import Settings
 
 L = StatusLevel
@@ -227,3 +233,33 @@ def test_group_networks() -> None:
     assert home.bands == (Band.GHZ_2_4, Band.GHZ_5)
     assert home.has_profile and home.router_name == "ZTE"
     assert not nets[1].has_profile and nets[1].router_name is None
+
+
+def test_popular_times_texts() -> None:
+    tuesday_19 = datetime(2026, 9, 29, 19, tzinfo=UTC)
+
+    def aggs(hours: int, value: float) -> list[HourlyAggregate]:
+        return [
+            HourlyAggregate("r", tuesday_19 + timedelta(hours=h), value, None) for h in range(hours)
+        ]
+
+    assert popular_times_summary(popular_times([], UTC)).startswith("No data yet.")
+    assert popular_times_summary(popular_times(aggs(5, 0.9), UTC)) == (
+        "Not enough data yet (5 hours so far). This fills in over the week."
+    )
+    quiet = popular_times(aggs(30, 0.1), UTC)
+    assert popular_times_summary(quiet) == "Rarely busy: Low at every hour recorded so far."
+    busy = popular_times([*aggs(1, 0.9), *aggs(30, 0.1)[1:]], UTC)
+    assert popular_times_summary(busy) == "Usually busiest on Tuesdays, 19:00–20:00 (High)."
+
+    again = popular_times(
+        [*aggs(1, 0.9), HourlyAggregate("r", tuesday_19 + timedelta(days=7), 0.5, None)], UTC
+    )
+    assert popular_cell_text(again, 1, 19) == ("Tuesday 19:00–20:00: High (average of 2 Tuesdays)")
+    assert popular_cell_text(again, 1, 20) == "Tuesday 20:00–21:00: no data yet"
+
+
+def test_quiet_hours_text() -> None:
+    assert quiet_hours_text(QuietHours()).startswith("Off.")
+    assert quiet_hours_text(QuietHours(True)) == "No notifications from 22:00 to 07:00."
+    assert "nothing is muted" in quiet_hours_text(QuietHours(True, time(8), time(8)))

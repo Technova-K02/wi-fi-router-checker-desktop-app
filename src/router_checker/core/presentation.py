@@ -25,6 +25,7 @@ from router_checker.core.checker import CycleReport
 from router_checker.core.mac import MacAddress
 from router_checker.core.models import (
     Band,
+    BusyLevel,
     Busyness,
     InstabilityReason,
     Recommendation,
@@ -34,9 +35,12 @@ from router_checker.core.models import (
     Score,
     Verdict,
 )
+from router_checker.core.popularity import PopularTimes, busy_level
+from router_checker.core.quiet_hours import QuietHours, format_hhmm
 from router_checker.core.scoring import LABEL_GOOD
 
 DASH = "\N{EN DASH}"
+DAYS = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
 TOOLTIP_MAX = 127  # Windows truncates tray tooltips at 128 characters
 
 
@@ -212,6 +216,49 @@ def busy_text(busy: Busyness | None, entry: ScanEntry | None = None) -> str:
     return (
         f"{busy.level.value} ({load.station_count} {devices}, {load.utilization_pct:.0f}% airtime)"
     )
+
+
+def quiet_hours_text(quiet: QuietHours) -> str:
+    if not quiet.enabled:
+        return "Off. Turn on to mute notifications at night."
+    if quiet.start == quiet.end:
+        return "The start and end are the same, so nothing is muted."
+    return f"No notifications from {format_hhmm(quiet.start)} to {format_hhmm(quiet.end)}."
+
+
+def fmt_hour(hour: int) -> str:
+    return f"{hour:02d}:00"
+
+
+def popular_times_summary(times: PopularTimes) -> str:
+    recorded = times.hours_recorded
+    if recorded == 0:
+        return (
+            "No data yet. Busyness is recorded while Router Checker runs "
+            "and this router is in range."
+        )
+    window = times.busiest()
+    if window is None:
+        hours = "hour" if recorded == 1 else "hours"
+        return f"Not enough data yet ({recorded} {hours} so far). This fills in over the week."
+    if window.level is BusyLevel.LOW:
+        return "Rarely busy: Low at every hour recorded so far."
+    return (
+        f"Usually busiest on {DAYS[window.day]}s, {fmt_hour(window.start_hour)}{DASH}"
+        f"{fmt_hour(window.end_hour)} ({window.level.value})."
+    )
+
+
+def popular_cell_text(times: PopularTimes, day: int, hour: int) -> str:
+    """One cell of the heatmap in words, e.g. "Tuesday 19:00–20:00: High (average of 3
+    Tuesdays)"."""
+    when = f"{DAYS[day]} {fmt_hour(hour)}{DASH}{fmt_hour(hour + 1)}"
+    value = times.values[day][hour]
+    if value is None:
+        return f"{when}: no data yet"
+    count = times.counts[day][hour]
+    days = DAYS[day] if count == 1 else f"{DAYS[day]}s"
+    return f"{when}: {busy_level(value).value} (average of {count} {days})"
 
 
 def recommendation_text(rec: Recommendation, routers: Sequence[Router]) -> str:
