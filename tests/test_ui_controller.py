@@ -1,10 +1,11 @@
 """AppController: checks run off the UI thread and report back through signals."""
 
+import codecs
 import json
 import threading
 import time
 from dataclasses import replace
-from datetime import timedelta
+from datetime import UTC, timedelta
 
 import pytest
 
@@ -19,6 +20,7 @@ from fakes import (
 )
 from router_checker.core.models import AlertKind, Router
 from router_checker.core.presentation import StatusLevel
+from router_checker.core.quiet_hours import QuietHours, parse_hhmm
 from router_checker.core.settings import Settings, load_settings
 from router_checker.ui.controller import AppController, Services
 
@@ -41,7 +43,9 @@ def make(tmp_path):
             watcher=FakeWatcher(),
         )
         settings = settings or Settings(pings_per_target=4, routers=sample_routers())
-        controller = AppController(settings, tmp_path / "settings.json", parts["store"], services)
+        controller = AppController(
+            settings, tmp_path / "settings.json", parts["store"], services, tz=UTC
+        )
         made.append(controller)
         return controller, services, parts
 
@@ -245,3 +249,45 @@ def test_shutdown_ends_a_running_check_quickly(qtbot, make) -> None:
     qtbot.wait(100)
     assert not finished
     assert parts["store"].recent_checks(10) == []
+
+
+def test_quiet_hours_hold_back_alerts(qtbot, make) -> None:
+    # The fake clock says 12:00 UTC.
+    quiet = QuietHours(True, parse_hhmm("11:00"), parse_hhmm("13:00"))
+    settings = Settings(
+        pings_per_target=4, routers=sample_routers(), unstable_checks=1, quiet_hours=quiet
+    )
+    controller, _, parts = make(settings)
+    parts["ping"].replies[GW] = [2.0, None]
+    with (
+        qtbot.assertNotEmitted(controller.alertRaised, wait=300),
+        qtbot.waitSignal(controller.checkFinished, timeout=TIMEOUT) as finished,
+    ):
+        controller.check_now()
+    assert finished.args[0].report.alert is not None  # still decided and logged
+    assert parts["store"].events("zte", 5)
+    assert not controller.alerts_allowed(finished.args[0].report.timestamp)
+    parts["clock"].advance(90)  # 13:30: quiet hours are over
+    assert controller.alerts_allowed(parts["clock"].now())
+
+
+def test_export_checks_writes_csv_with_bom(qtbot, make, tmp_path) -> None:
+    controller, _, _ = make()
+    with qtbot.waitSignal(controller.checkFinished, timeout=TIMEOUT):
+        controller.check_now()
+    target = tmp_path / "out.csv"
+    results = []
+    controller.export_checks(target, results.append, results.append)
+    qtbot.waitUntil(lambda: bool(results), timeout=TIMEOUT)
+    assert results == [1]
+    data = target.read_bytes()
+    assert data.startswith(codecs.BOM_UTF8 + b"Time,UTC offset,Router,")
+    assert "2026-09-29 12:00:00,+00:00,ZTE," in data.decode("utf-8-sig")
+
+
+def test_export_errors_are_reported(qtbot, make, tmp_path) -> None:
+    controller, _, _ = make()
+    results = []
+    controller.export_checks(tmp_path / "missing" / "out.csv", results.append, results.append)
+    qtbot.waitUntil(lambda: bool(results), timeout=TIMEOUT)
+    assert isinstance(results[0], OSError)

@@ -8,10 +8,15 @@ from PySide6.QtCore import QUrl
 from PySide6.QtGui import QDesktopServices
 
 LOCATION_SETTINGS = "ms-settings:privacy-location"
+NOTIFICATION_SETTINGS = "ms-settings:notifications"
 
 
 def open_location_settings() -> None:
     QDesktopServices.openUrl(QUrl(LOCATION_SETTINGS))
+
+
+def open_notification_settings() -> None:
+    QDesktopServices.openUrl(QUrl(NOTIFICATION_SETTINGS))
 
 
 def open_folder(path: Path) -> None:

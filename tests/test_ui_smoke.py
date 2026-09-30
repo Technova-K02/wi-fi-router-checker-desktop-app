@@ -3,13 +3,14 @@
 from dataclasses import replace
 
 import pytest
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import Qt, QTime, QTimer
 from PySide6.QtGui import QAction, QKeySequence, QShortcut
-from qfluentwidgets import Theme, setTheme
+from qfluentwidgets import PushButton, Theme, setTheme
 
 from fakes import GW, FakeWatcher, gateway_info, network_parts, sample_routers
 from router_checker.core.models import Router, WifiConnection
 from router_checker.core.presentation import StatusLevel
+from router_checker.core.quiet_hours import QuietHours
 from router_checker.core.settings import Settings
 from router_checker.ui.controller import AppController, Services
 from router_checker.ui.dialogs.first_run import FirstRunDialog
@@ -190,3 +191,26 @@ def test_flyout_and_icons_render(qtbot, app_parts) -> None:
     for level in StatusLevel:
         assert not status_icon(level).isNull()
     assert not app_icon().isNull()
+
+
+def test_quiet_hours_and_notification_settings(qtbot, app_parts) -> None:
+    controller, window, _ = app_parts
+    page = window.settings_page
+    page.quiet_switch.setChecked(True)
+    assert controller.settings.quiet_hours == QuietHours(True)
+    assert page.quiet_card.card.contentLabel.text() == "No notifications from 22:00 to 07:00."
+    page.quiet_start.setTime(QTime(23, 15))
+    page._apply()
+    assert controller.settings.quiet_hours.start.strftime("%H:%M") == "23:15"
+    page.show_notification_status(False)
+    assert page.windows_card.contentLabel.text().startswith("Off for Router Checker")
+    with qtbot.waitSignal(page.testNotificationRequested, timeout=TIMEOUT):
+        page.windows_card.findChildren(PushButton)[0].click()
+
+
+def test_closing_the_window_hints_once(qtbot, app_parts) -> None:
+    _, window, _ = app_parts
+    with qtbot.waitSignal(window.hiddenToTray, timeout=TIMEOUT):
+        window.close()
+    with qtbot.assertNotEmitted(window.hiddenToTray, wait=100):
+        window.close()

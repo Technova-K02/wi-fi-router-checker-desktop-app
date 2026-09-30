@@ -171,7 +171,6 @@ class TrayIcon(QObject):
             controller.settingsChanged,
         ):
             signal.connect(self.refresh)
-        controller.alertRaised.connect(self.notify_alert)
         self.refresh()
 
     def show(self) -> None:
@@ -188,17 +187,17 @@ class TrayIcon(QObject):
         self.tray.setIcon(self._icons[status.level])
         self.tray.setToolTip(tray_tooltip(report, status, c.is_checking))
 
+    # Balloon messages: the fallback when Windows notifications (toasts) don't work.
+
+    def show_message(
+        self, title: str, text: str, level: StatusLevel = StatusLevel.UNKNOWN, ms: int = 6_000
+    ) -> None:
+        self.tray.showMessage(title, text, self._icons[level], ms)
+
     def notify_alert(self, alert: Alert) -> None:
         good = alert.kind is AlertKind.RECOVERED
-        icon = self._icons[StatusLevel.GOOD if good else StatusLevel.BAD]
-        self.tray.showMessage(alert.title, alert.text, icon, 10_000)
-
-    def notify_hidden(self) -> None:
-        self.tray.showMessage(
-            "Router Checker is still running",
-            "It keeps checking in the background. Use the tray icon to open it or to exit.",
-            self._icons[StatusLevel.UNKNOWN],
-            6_000,
+        self.show_message(
+            alert.title, alert.text, StatusLevel.GOOD if good else StatusLevel.BAD, 10_000
         )
 
     # --- flyout -------------------------------------------------------------------

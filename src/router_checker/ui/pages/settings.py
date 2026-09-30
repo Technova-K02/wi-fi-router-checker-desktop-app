@@ -7,10 +7,12 @@ controller.
 from __future__ import annotations
 
 from dataclasses import replace
+from datetime import time
+from pathlib import Path
 
-from PySide6.QtCore import Qt, QTimer, Signal
+from PySide6.QtCore import QStandardPaths, Qt, QTime, QTimer, Signal
 from PySide6.QtGui import QColor
-from PySide6.QtWidgets import QHBoxLayout, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QFileDialog, QHBoxLayout, QVBoxLayout, QWidget
 from qfluentwidgets import (
     BodyLabel,
     CaptionLabel,
@@ -18,12 +20,14 @@ from qfluentwidgets import (
     DoubleSpinBox,
     ExpandGroupSettingCard,
     InfoBar,
+    InfoBarPosition,
     LineEdit,
     PushButton,
     SettingCard,
     SettingCardGroup,
     SpinBox,
     SwitchButton,
+    TimePicker,
     ToolTipFilter,
     TransparentToolButton,
 )
@@ -31,11 +35,17 @@ from qfluentwidgets import FluentIcon as FIF
 
 from router_checker import __version__
 from router_checker.core.alerts import Thresholds
+from router_checker.core.presentation import quiet_hours_text
+from router_checker.core.quiet_hours import QuietHours
 from router_checker.core.scheduler import INTERVAL_CHOICES_MIN
 from router_checker.core.settings import Settings, is_valid_target
 from router_checker.ui.controller import AppController
 from router_checker.ui.pages.base import Page
-from router_checker.ui.shell import open_folder, open_location_settings
+from router_checker.ui.shell import (
+    open_folder,
+    open_location_settings,
+    open_notification_settings,
+)
 
 APPLY_DELAY_MS = 600
 
@@ -49,6 +59,10 @@ def _card(icon: FIF, title: str, content: str, *controls: QWidget) -> SettingCar
             control.setAccessibleName(title)
     card.hBoxLayout.addSpacing(8)
     return card
+
+
+def _to_time(value: QTime) -> time:
+    return time(value.hour(), value.minute())
 
 
 def _spin(low: int, high: int, suffix: str, step: int = 1) -> SpinBox:
@@ -149,6 +163,9 @@ class TargetsEditor(QWidget):
 
 
 class SettingsPage(Page):
+    testNotificationRequested = Signal()
+    notificationStatusRequested = Signal()
+
     def __init__(self, controller: AppController, parent: QWidget | None = None) -> None:
         super().__init__("settingsPage", "Settings", parent)
         self.controller = controller
@@ -261,6 +278,24 @@ class SettingsPage(Page):
         # Notifications
         self.notify = SwitchButton()
         self.notify.checkedChanged.connect(lambda _c: self._apply())
+        self.quiet_switch = SwitchButton()
+        self.quiet_switch.setAccessibleName("Quiet hours")
+        self.quiet_switch.checkedChanged.connect(lambda _c: self._apply())
+        self.quiet_start = TimePicker()
+        self.quiet_end = TimePicker()
+        for picker, name in ((self.quiet_start, "Quiet from"), (self.quiet_end, "Quiet until")):
+            picker.setAccessibleName(name)
+            picker.timeChanged.connect(lambda _t: self._apply())
+        self.quiet_card = ExpandGroupSettingCard(FIF.QUIET_HOURS, "Quiet hours", "")
+        self.quiet_card.addWidget(self.quiet_switch)
+        self.quiet_card.addGroupWidget(self._quiet_times())
+        test = PushButton("Send a test")
+        test.clicked.connect(lambda: self.testNotificationRequested.emit())  # drop "checked"
+        open_notifications = PushButton("Open settings")
+        open_notifications.clicked.connect(open_notification_settings)
+        self.windows_card = _card(
+            FIF.MESSAGE, "Windows notifications", "Checking…", test, open_notifications
+        )
         notifications = SettingCardGroup("Notifications", self.view)
         notifications.addSettingCard(
             _card(
@@ -270,6 +305,8 @@ class SettingsPage(Page):
                 self.notify,
             )
         )
+        notifications.addSettingCard(self.quiet_card)
+        notifications.addSettingCard(self.windows_card)
 
         # Privacy and data
         open_location = PushButton("Open settings")
@@ -297,6 +334,16 @@ class SettingsPage(Page):
         privacy.addSettingCard(
             _card(FIF.FOLDER, "Data folder", str(data_dir or "Not saved"), open_data)
         )
+        self.export_button = PushButton(FIF.SAVE_AS, "Export…")
+        self.export_button.clicked.connect(lambda: self._export())
+        privacy.addSettingCard(
+            _card(
+                FIF.DOCUMENT,
+                "Export history",
+                "Save every kept check as a CSV file, for Excel or other tools.",
+                self.export_button,
+            )
+        )
         about = SettingCardGroup("About", self.view)
         about.addSettingCard(
             _card(
@@ -317,9 +364,67 @@ class SettingsPage(Page):
         controller.locationStatus.connect(self._show_location)
         self._load(controller.settings)
 
+    def _quiet_times(self) -> QWidget:
+        row = QWidget()
+        layout = QHBoxLayout(row)
+        layout.setContentsMargins(48, 12, 48, 14)
+        layout.setSpacing(12)
+        layout.addWidget(BodyLabel("From", row))
+        layout.addWidget(self.quiet_start)
+        layout.addSpacing(8)
+        layout.addWidget(BodyLabel("to", row))
+        layout.addWidget(self.quiet_end)
+        layout.addStretch(1)
+        return row
+
     def showEvent(self, event) -> None:
         super().showEvent(event)
         self._probe_location()
+        self.notificationStatusRequested.emit()
+
+    def show_notification_status(self, enabled: bool | None) -> None:
+        if enabled is None:
+            text = "Not known yet. Send a test to check that notifications show up."
+        elif enabled:
+            text = "On. Alerts appear as Windows notifications."
+        else:
+            text = "Off for Router Checker in Windows settings, so alerts can't appear."
+        self.windows_card.setContent(text)
+
+    def _export(self) -> None:
+        folder = Path(
+            QStandardPaths.writableLocation(QStandardPaths.StandardLocation.DocumentsLocation)
+        )
+        today = self.controller.local_time(self.controller.now())
+        suggested = folder / f"router-checker-checks-{today:%Y-%m-%d}.csv"
+        name, _filter = QFileDialog.getSaveFileName(
+            self.window(), "Export history", str(suggested), "CSV files (*.csv)"
+        )
+        if not name:
+            return
+        path = Path(name)
+        self.export_button.setEnabled(False)
+        self.controller.export_checks(
+            path, lambda count: self._exported(path, count), self._export_failed
+        )
+
+    def _exported(self, path: Path, count: int) -> None:
+        self.export_button.setEnabled(True)
+        rows = "1 check" if count == 1 else f"{count:,} checks"
+        bar = InfoBar.success(
+            "History exported", f"{rows} saved to {path.name}.", duration=8000,
+            position=InfoBarPosition.TOP, parent=self.window(),
+        )  # fmt: skip
+        show = PushButton("Show in folder")
+        show.clicked.connect(lambda: open_folder(path.parent))
+        bar.addWidget(show)
+
+    def _export_failed(self, exc: BaseException) -> None:
+        self.export_button.setEnabled(True)
+        InfoBar.error(
+            "Export failed", str(exc), duration=8000,
+            position=InfoBarPosition.TOP, parent=self.window(),
+        )  # fmt: skip
 
     def _probe_location(self) -> None:
         self.location_card.setContent("Checking…")
@@ -349,6 +454,11 @@ class SettingsPage(Page):
             self.recovery.setValue(settings.recovery_checks)
             self.cooldown.setValue(settings.alert_cooldown_min)
             self.notify.setChecked(settings.notifications_enabled)
+            quiet = settings.quiet_hours
+            self.quiet_switch.setChecked(quiet.enabled)
+            self.quiet_start.setTime(QTime(quiet.start.hour, quiet.start.minute))
+            self.quiet_end.setTime(QTime(quiet.end.hour, quiet.end.minute))
+            self.quiet_card.card.setContent(quiet_hours_text(quiet))
             self.retention.setValue(settings.retention_days)
         finally:
             self._loading = False
@@ -382,6 +492,11 @@ class SettingsPage(Page):
                 recovery_checks=self.recovery.value(),
                 alert_cooldown_min=self.cooldown.value(),
                 notifications_enabled=self.notify.isChecked(),
+                quiet_hours=QuietHours(
+                    self.quiet_switch.isChecked(),
+                    _to_time(self.quiet_start.getTime()),
+                    _to_time(self.quiet_end.getTime()),
+                ),
                 retention_days=self.retention.value(),
             )
         except ValueError as exc:

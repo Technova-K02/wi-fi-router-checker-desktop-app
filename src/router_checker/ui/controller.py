@@ -12,13 +12,14 @@ import logging
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass, replace
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, tzinfo
 from pathlib import Path
 from typing import Any
 
 from PySide6.QtCore import QObject, QRunnable, QThreadPool, QTimer, Signal, SignalInstance, Slot
 
 from router_checker.core.checker import CheckEngine, CycleReport
+from router_checker.core.export import write_checks_csv
 from router_checker.core.models import (
     CheckRecord,
     Event,
@@ -134,8 +135,10 @@ class AppController(QObject):
         store: HistoryStore,
         services: Services,
         parent: QObject | None = None,
+        tz: tzinfo | None = None,  # local time for quiet hours; None: the computer's
     ) -> None:
         super().__init__(parent)
+        self._tz = tz
         self._settings = settings
         self._settings_path = settings_path
         self._store = store
@@ -194,6 +197,14 @@ class AppController(QObject):
     def now(self) -> datetime:
         return self._services.clock.now()
 
+    def local_time(self, when: datetime) -> datetime:
+        return when.astimezone(self._tz)
+
+    def alerts_allowed(self, when: datetime) -> bool:
+        """Alerts are on and ``when`` is outside quiet hours."""
+        s = self._settings
+        return s.notifications_enabled and not s.quiet_hours.contains(self.local_time(when).time())
+
     # --- lifecycle --------------------------------------------------------------
 
     def start(self) -> None:
@@ -249,8 +260,11 @@ class AppController(QObject):
             "check done: %s (%s), router %s", snapshot.status.title, snapshot.status.detail, name
         )
         self._schedule(report.timestamp, report.unstable)
-        if report.alert is not None and self._settings.notifications_enabled:
-            self.alertRaised.emit(report.alert)
+        if report.alert is not None:
+            if self.alerts_allowed(report.timestamp):
+                self.alertRaised.emit(report.alert)
+            else:
+                log.info("alert not shown (alerts off or quiet hours): %s", report.alert.title)
         self.locationStatus.emit(None if report.wifi_error else report.location_allowed)
         self.checkFinished.emit(snapshot)
         self._maybe_check_again()
@@ -407,6 +421,23 @@ class AppController(QObject):
             )
 
         self.run_task(work, on_done, self._log_error)
+
+    def export_checks(
+        self,
+        path: Path,
+        on_done: Callable[[int], None],
+        on_error: Callable[[BaseException], None],
+    ) -> None:
+        """Write every kept check to ``path`` as CSV; ``on_done`` gets the row count."""
+        store, tz = self._store, self._tz
+        names = {r.id: r.name for r in self._settings.routers}
+
+        def work() -> int:
+            records = store.checks_since()
+            with path.open("w", encoding="utf-8-sig", newline="") as stream:
+                return write_checks_csv(stream, records, names, tz)
+
+        self.run_task(work, on_done, on_error)
 
     # --- worker plumbing --------------------------------------------------------
 

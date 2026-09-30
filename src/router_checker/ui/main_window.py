@@ -27,11 +27,11 @@ from router_checker.ui.style import app_icon
 
 class MainWindow(FluentWindow):
     exitRequested = Signal()  # the dashboard's Exit button or Ctrl+Q
+    hiddenToTray = Signal()  # the first time closing the window only hid it
 
     def __init__(self, controller: AppController) -> None:
         super().__init__()
         self.controller = controller
-        self.tray = None  # set by the app once the tray icon exists
         self._quitting = False
         self._hidden_hint_shown = False
         self._theme_listener: SystemThemeListener | None = None
@@ -106,9 +106,9 @@ class MainWindow(FluentWindow):
             return
         event.ignore()
         self.hide()
-        if not self._hidden_hint_shown and self.tray is not None:
+        if not self._hidden_hint_shown:
             self._hidden_hint_shown = True
-            self.tray.notify_hidden()
+            self.hiddenToTray.emit()
 
     # --- routers ----------------------------------------------------------------
 

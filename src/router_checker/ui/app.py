@@ -20,6 +20,7 @@ from router_checker.core.settings import Settings, load_settings
 from router_checker.core.storage import SqliteHistoryStore
 
 APP_ID = "RouterChecker.RouterChecker"
+APP_NAME = "Router Checker"
 log = logging.getLogger("router_checker")
 
 
@@ -72,6 +73,23 @@ def load_or_reset(path: Path) -> tuple[Settings, str | None]:
         return Settings(), message
 
 
+def make_toaster(data_dir: Path):
+    """Windows notifications under the app's own name and icon, or None (tray messages)."""
+    from router_checker.ui.style import app_icon
+
+    try:
+        from router_checker.platform_windows.toasts import WindowsToastNotifier, register_app_id
+
+        icon = data_dir / "app-icon.png"
+        if not app_icon().pixmap(256, 256).save(str(icon)):
+            icon = None
+        register_app_id(APP_ID, APP_NAME, icon)
+        return WindowsToastNotifier(APP_ID, APP_NAME)
+    except Exception:
+        log.warning("Windows notifications are unavailable; using tray messages", exc_info=True)
+        return None
+
+
 def parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(prog="router-checker-app")
     parser.add_argument("--minimized", action="store_true", help="start in the tray")
@@ -92,7 +110,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         log.warning("could not set the app id", exc_info=True)
 
     app = QApplication(sys.argv[:1])
-    app.setApplicationName("Router Checker")
+    app.setApplicationName(APP_NAME)
     app.setApplicationVersion(__version__)
     app.setQuitOnLastWindowClosed(False)
 
@@ -118,6 +136,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     from router_checker.platform_windows.wlan import WindowsWifiService
     from router_checker.ui.controller import AppController, Services
     from router_checker.ui.main_window import MainWindow
+    from router_checker.ui.notifications import NotificationCenter
     from router_checker.ui.tray import TrayIcon
 
     settings_path = data_dir / "settings.json"
@@ -136,9 +155,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     window = MainWindow(controller)
     window.start_theme_listener()
     tray = TrayIcon(controller, window)
-    window.tray = tray
     tray.show()
     instance.activated.connect(window.bring_to_front)
+    notifications = NotificationCenter(controller, tray, make_toaster(data_dir), window)
+    notifications.openRequested.connect(window.bring_to_front)
+    notifications.statusChanged.connect(window.settings_page.show_notification_status)
+    window.hiddenToTray.connect(notifications.notify_hidden)
+    window.settings_page.testNotificationRequested.connect(notifications.send_test)
+    window.settings_page.notificationStatusRequested.connect(notifications.refresh_status)
 
     def quit_app() -> None:
         log.info("exiting")
