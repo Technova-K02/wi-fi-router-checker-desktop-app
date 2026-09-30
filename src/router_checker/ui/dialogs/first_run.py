@@ -151,7 +151,9 @@ class FirstRunDialog(MessageBoxBase):
         controller.settingsChanged.connect(self._show_routers)
         QGuiApplication.instance().applicationStateChanged.connect(self._app_state_changed)
         self._show_routers(controller.settings)
-        self._set_step(0)
+        # Location access only matters for Wi-Fi scans: without Wi-Fi, start at step 2.
+        self._first = 0 if controller.has_wifi else 1
+        self._set_step(self._first)
 
     def interval_min(self) -> int:
         return self.interval.currentData()
@@ -165,16 +167,17 @@ class FirstRunDialog(MessageBoxBase):
 
     def _back(self) -> None:
         step = self.stack.currentIndex()
-        if step == 0:
+        if step == self._first:
             self.reject()
         else:
             self._set_step(step - 1)
 
     def _set_step(self, step: int) -> None:
         self.stack.setCurrentIndex(step)
-        self.step_label.setText(f"Welcome to Router Checker · step {step + 1} of {STEPS}")
+        number, steps = step - self._first + 1, STEPS - self._first
+        self.step_label.setText(f"Welcome to Router Checker · step {number} of {steps}")
         self.yesButton.setText("Finish" if step == STEPS - 1 else "Next")
-        self.cancelButton.setText("Skip setup" if step == 0 else "Back")
+        self.cancelButton.setText("Skip setup" if step == self._first else "Back")
         if step == 0:
             self.controller.probe_location()
 

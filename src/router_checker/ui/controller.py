@@ -105,6 +105,7 @@ class Services:
     switcher: RouterSwitcher | None = None  # Test all and the Switch button
     idle: IdleMonitor | None = None  # scheduled Test all waits for the user to be away
     startup: StartupService | None = None  # Start with Windows
+    has_wifi: bool = True  # False on a PC without a Wi-Fi adapter
 
 
 @dataclass(frozen=True, slots=True)
@@ -316,6 +317,19 @@ class AppController(QObject):
     @property
     def can_switch(self) -> bool:
         return self._runner is not None
+
+    @property
+    def has_wifi(self) -> bool:
+        return self._services.has_wifi
+
+    def current_gateway(
+        self,
+        on_done: Callable[[GatewayInfo | None], None],
+        on_error: Callable[[BaseException], None] | None = None,
+    ) -> None:
+        """The router you're connected to right now, Wi-Fi or Ethernet (worker thread)."""
+        netinfo, choice = self._services.netinfo, self._settings.connection
+        self.run_task(lambda: netinfo.gateway(choice), on_done, on_error)
 
     @property
     def can_start_with_windows(self) -> bool:

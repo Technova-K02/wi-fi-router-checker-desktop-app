@@ -7,12 +7,29 @@ from PySide6.QtCore import Qt, QTime, QTimer
 from PySide6.QtGui import QAction, QKeySequence, QShortcut
 from qfluentwidgets import InfoBar, PushButton, Theme, setTheme
 
-from fakes import GW, FakeStartup, FakeWatcher, gateway_info, network_parts, sample_routers
-from router_checker.core.models import Recommendation, Router, Score, WifiConnection
-from router_checker.core.presentation import StatusLevel
+from fakes import (
+    GW,
+    WIFI_IP,
+    FakeNetInfo,
+    FakeStartup,
+    FakeWatcher,
+    FakeWifi,
+    cable_gateway,
+    gateway_info,
+    network_parts,
+    sample_routers,
+)
+from router_checker.core.models import (
+    LinkChoice,
+    Recommendation,
+    Router,
+    Score,
+    WifiConnection,
+)
+from router_checker.core.presentation import Status, StatusLevel, tray_tooltip
 from router_checker.core.quiet_hours import QuietHours
 from router_checker.core.settings import Settings
-from router_checker.core.switching import SwitchTiming
+from router_checker.core.switching import ON_ETHERNET, SwitchTiming
 from router_checker.ui.controller import AppController, Services
 from router_checker.ui.dialogs.first_run import FirstRunDialog
 from router_checker.ui.dialogs.router_dialog import RouterDialog
@@ -369,3 +386,103 @@ def test_the_start_with_windows_switch_shows_what_windows_has(qtbot, app_parts) 
     page.startup.setChecked(True)
     assert not startup.on
     assert not page.startup.isChecked()  # Windows refused, so the switch goes back
+
+
+# --- Ethernet ---------------------------------------------------------------------------
+
+
+def test_the_dashboard_on_a_cable(qtbot, app_parts) -> None:
+    controller, window, parts = app_parts
+    parts["netinfo"].cable = cable_gateway()
+    check(qtbot, controller)
+    window.dashboard.refresh()
+    card = window.dashboard.current
+    assert card.name.text() == "ZTE"
+    assert card.network.text().startswith("Ethernet · gateway 192.168.1.1")
+    assert (card.signal.value.text(), card.signal.note.text()) == ("Cable", "no Wi-Fi signal")
+    assert card.recommend_text.isHidden() and card.switch_button.isHidden()
+    button = window.dashboard.test_all_button
+    assert not button.isEnabled() and button.toolTip() == ON_ETHERNET
+    assert "ZTE (Ethernet): Stable" in tray_tooltip(controller.last_snapshot.report, Status(
+        StatusLevel.GOOD, "Stable"))  # fmt: skip
+
+
+def test_the_dashboard_says_when_a_vpn_is_on(qtbot, app_parts) -> None:
+    controller, window, parts = app_parts
+    parts["netinfo"].vpn = True
+    parts["ping"].blocked = {(WIFI_IP, t) for t in ("1.1.1.1", "8.8.8.8", "142.250.0.1")}
+    check(qtbot, controller)
+    window.dashboard.refresh()
+    card = window.dashboard.current
+    assert card.network.text().endswith("VPN on, internet measured through it")
+    assert card.internet.note.text().endswith("· VPN")
+
+
+def test_the_connection_setting(qtbot, app_parts) -> None:
+    controller, window, _ = app_parts
+    box = window.settings_page.connection
+    assert [box.itemText(i) for i in range(box.count())] == [
+        "Automatic", "Wi-Fi only", "Ethernet only"
+    ]  # fmt: skip
+    assert box.currentText() == "Automatic"
+    box.setCurrentIndex(2)
+    assert controller.settings.connection is LinkChoice.ETHERNET
+
+
+def test_add_the_router_youre_connected_to(qtbot, app_parts) -> None:
+    controller, window, parts = app_parts
+    parts["netinfo"].cable = cable_gateway(GW, "12-34-56-78-9A-BC")  # a new router
+    dialog = RouterDialog(controller, parent=window)
+    dialog.use_current.click()
+    qtbot.waitUntil(lambda: dialog.use_current.isEnabled(), timeout=TIMEOUT)
+    assert [str(m) for m in dialog._macs] == ["12-34-56-78-9A-BC"]
+    assert dialog.mac_feedback.text() == (
+        "✓ Added 12-34-56-78-9A-BC, the router you're connected to over Ethernet."
+    )
+    parts["netinfo"].cable = parts["netinfo"].wifi = None
+    dialog.use_current.click()
+    qtbot.waitUntil(lambda: dialog.use_current.isEnabled(), timeout=TIMEOUT)
+    assert dialog.mac_feedback.text() == "You're not connected to a router right now."
+    dialog.reject()
+
+
+@pytest.fixture
+def ethernet_pc(qtbot, tmp_path):
+    """A PC without a Wi-Fi adapter, plugged into the ZTE."""
+    parts = network_parts()
+    parts["wifi"] = FakeWifi(missing=True)
+    parts["netinfo"] = FakeNetInfo(cable=cable_gateway())
+    services = Services(
+        parts["wifi"], parts["ping"], parts["dns"], parts["netinfo"], parts["clock"],
+        FakeWatcher(), None, has_wifi=False,
+    )  # fmt: skip
+    settings = Settings(pings_per_target=4, routers=sample_routers(), first_run_done=True)
+    controller = AppController(settings, tmp_path / "settings.json", parts["store"], services)
+    window = MainWindow(controller)
+    qtbot.addWidget(window)
+    yield controller, window, parts
+    window.prepare_quit()
+    controller.shutdown()
+
+
+def test_a_pc_without_wifi_hides_the_wifi_parts(qtbot, ethernet_pc) -> None:
+    controller, window, _ = ethernet_pc
+    check(qtbot, controller)
+    window.dashboard.refresh()
+    assert window.dashboard.current.status.title.text() == "Stable"
+    assert window.dashboard.wifi_bar.isHidden()  # "no Wi-Fi adapter" is no error here
+    assert window.dashboard.test_all_button.isHidden()
+    page = window.settings_page
+    assert page.location_card.isHidden()
+    assert page.test_all_card.isHidden() and page.auto_switch_card.isHidden()
+
+    first_run = FirstRunDialog(controller, lambda: None, window)
+    assert first_run.stack.currentIndex() == 1  # no location step
+    assert first_run.step_label.text() == "Welcome to Router Checker · step 1 of 2"
+    assert first_run.cancelButton.text() == "Skip setup"
+    first_run.reject()
+
+    dialog = RouterDialog(controller, parent=window)
+    assert dialog.network_list.isHidden()
+    assert dialog.scan_note.text().startswith("This PC has no Wi-Fi adapter")
+    dialog.reject()

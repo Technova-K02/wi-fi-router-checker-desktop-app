@@ -119,6 +119,19 @@ def exit_running_copy() -> int:
     return 1
 
 
+def wifi_present(wifi) -> bool:
+    """Does this PC have a Wi-Fi adapter? Ethernet-only PCs run without the Wi-Fi parts."""
+    from router_checker.core.errors import WifiUnavailableError
+
+    try:
+        present = bool(wifi.interfaces())
+    except (WifiUnavailableError, OSError):
+        present = False
+    if not present:
+        log.info("no Wi-Fi adapter: Ethernet only")
+    return present
+
+
 def parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(prog="router-checker-app")
     parser.add_argument("--minimized", action="store_true", help="start in the tray")
@@ -181,6 +194,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     store = SqliteHistoryStore(data_dir / "history.db")
     wifi = WindowsWifiService()
     startup = WindowsStartup()
+    has_wifi = wifi_present(wifi)
     services = Services(
         wifi=wifi,
         ping=WindowsPingService(),
@@ -188,9 +202,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         netinfo=WindowsNetworkInfoService(),
         clock=win.SystemClock(),
         watcher=RouteChangeWatcher(),
-        switcher=wifi,
+        switcher=wifi if has_wifi else None,  # Test all and switching need Wi-Fi
         idle=WindowsIdleMonitor(),
         startup=startup,
+        has_wifi=has_wifi,
     )
     if is_built():
         try:  # the exe moved or was installed elsewhere: start this copy at sign-in

@@ -253,7 +253,8 @@ class CurrentRouterCard(SimpleCardWidget):
             else:
                 self.name.setText(conn.ssid if conn and conn.ssid else "Unknown network")
         parts = []
-        if report.gateway is not None and report.gateway.wired:
+        wired = report.gateway is not None and report.gateway.wired
+        if wired:
             parts.append("Ethernet")
         elif conn is not None:
             parts.append(f'Wi-Fi "{conn.ssid}"' if conn.ssid else "Hidden Wi-Fi")
@@ -261,7 +262,7 @@ class CurrentRouterCard(SimpleCardWidget):
         entry = current.observation.entry if current and current.observation else None
         if entry is None and conn is not None and conn.bssid and report.scan:
             entry = next((e for e in report.scan if e.bssid == conn.bssid), None)
-        if entry is not None:
+        if entry is not None and not wired:  # a cable doesn't use the router's Wi-Fi band
             parts.append(band_text(entry))
         if report.gateway is not None:
             parts.append(f"gateway {report.gateway.gateway_ip}")

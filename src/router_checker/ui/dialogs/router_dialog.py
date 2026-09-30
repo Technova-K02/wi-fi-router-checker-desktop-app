@@ -35,7 +35,7 @@ from qfluentwidgets import FluentIcon as FIF
 
 from router_checker.core.errors import LocationPermissionError
 from router_checker.core.mac import MacAddress, try_parse_mac
-from router_checker.core.models import DEFAULT_ROUTER_COLORS, Router
+from router_checker.core.models import DEFAULT_ROUTER_COLORS, GatewayInfo, Router
 from router_checker.core.presentation import NearbyNetwork, group_networks
 from router_checker.ui.controller import AppController, ScanResult
 from router_checker.ui.shell import open_location_settings
@@ -94,7 +94,7 @@ class RouterDialog(MessageBoxBase):
         self.spinner = IndeterminateProgressRing(self, start=False)
         self.spinner.setFixedSize(16, 16)
         self.spinner.setStrokeWidth(2)
-        rescan = TransparentToolButton(FIF.SYNC, self)
+        rescan = self.rescan = TransparentToolButton(FIF.SYNC, self)
         rescan.setToolTip("Scan again")
         rescan.setAccessibleName("Scan again")
         rescan.installEventFilter(ToolTipFilter(rescan))
@@ -143,6 +143,15 @@ class RouterDialog(MessageBoxBase):
         mac_input = QHBoxLayout()
         mac_input.addWidget(self.mac_edit, 1)
         mac_input.addWidget(add_mac)
+        self.use_current = PushButton(FIF.CONNECT, "Use the router I'm connected to", self)
+        self.use_current.setToolTip(
+            "Adds the MAC of the router you're connected to right now, over Wi-Fi or Ethernet"
+        )
+        self.use_current.installEventFilter(ToolTipFilter(self.use_current))
+        self.use_current.clicked.connect(self._use_current)
+        current_row = QHBoxLayout()
+        current_row.addWidget(self.use_current)
+        current_row.addStretch(1)
 
         self.swatches = QButtonGroup(self)
         swatch_row = QHBoxLayout()
@@ -163,7 +172,7 @@ class RouterDialog(MessageBoxBase):
         form.setHorizontalSpacing(16)
         form.setVerticalSpacing(10)
         form.setColumnStretch(1, 1)
-        labels = ["Name", "Wi-Fi name (SSID)", "MAC addresses", "", "", "Color"]
+        labels = ["Name", "Wi-Fi name (SSID)", "MAC addresses", "", "", "", "Color"]
         for row, text in enumerate(labels):
             if text:
                 align = Qt.AlignmentFlag.AlignTop if row == 2 else Qt.AlignmentFlag.AlignVCenter
@@ -173,7 +182,8 @@ class RouterDialog(MessageBoxBase):
         form.addWidget(self.mac_rows, 2, 1)
         form.addLayout(mac_input, 3, 1)
         form.addWidget(self.mac_feedback, 4, 1)
-        form.addLayout(swatch_row, 5, 1)
+        form.addLayout(current_row, 5, 1)
+        form.addLayout(swatch_row, 6, 1)
 
         self.error = BodyLabel("", self)
         self.error.setTextColor(*ERROR_COLORS)
@@ -197,7 +207,16 @@ class RouterDialog(MessageBoxBase):
         self._rebuild_macs()
         self._set_color(self._color)
         self._check_mac("")
-        self._scan()
+        if controller.has_wifi:
+            self._scan()
+        else:
+            self.network_list.hide()
+            self.spinner.hide()
+            self.rescan.hide()
+            self.scan_note.setText(
+                "This PC has no Wi-Fi adapter, so there are no nearby networks to pick from. "
+                "Use the router you're connected to, or type its MAC."
+            )
         self.name.setFocus()
 
     # --- result -----------------------------------------------------------------
@@ -312,6 +331,39 @@ class RouterDialog(MessageBoxBase):
                 self._macs.append(mac)
         self._rebuild_macs()
         self._show_error("")
+
+    def _use_current(self) -> None:
+        self.use_current.setEnabled(False)
+        self.controller.current_gateway(self._on_current, self._on_current_error)
+
+    def _on_current(self, gateway: GatewayInfo | None) -> None:
+        self.use_current.setEnabled(True)
+        if gateway is None:
+            self._set_feedback("You're not connected to a router right now.", error=True)
+            return
+        mac = gateway.gateway_mac
+        if mac is None:
+            self._set_feedback(
+                f"The router at {gateway.gateway_ip} didn't tell its MAC. Try again.", error=True
+            )
+            return
+        if mac not in self._macs:
+            self._macs.append(mac)
+            self._rebuild_macs()
+        how = gateway.kind.label
+        self._set_feedback(f"✓ Added {mac}, the router you're connected to over {how}.")
+        self._show_error("")
+
+    def _on_current_error(self, exc: BaseException) -> None:
+        self.use_current.setEnabled(True)
+        self._set_feedback(f"Couldn't read the connection: {exc}", error=True)
+
+    def _set_feedback(self, text: str, error: bool = False) -> None:
+        self.mac_feedback.setText(text)
+        if error:
+            self.mac_feedback.setTextColor(*ERROR_COLORS)
+        else:
+            self.mac_feedback.setTextColor(QColor("#0F7B0F"), QColor("#6CCB5F"))
 
     # --- MAC list -----------------------------------------------------------------
 

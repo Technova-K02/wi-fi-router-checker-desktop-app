@@ -35,6 +35,7 @@ from qfluentwidgets import FluentIcon as FIF
 
 from router_checker import __version__
 from router_checker.core.alerts import Thresholds
+from router_checker.core.models import LinkChoice
 from router_checker.core.presentation import quiet_hours_text
 from router_checker.core.quiet_hours import QuietHours
 from router_checker.core.scheduler import INTERVAL_CHOICES_MIN, TEST_ALL_INTERVAL_CHOICES_H
@@ -162,6 +163,13 @@ class TargetsEditor(QWidget):
             self.changed.emit()
 
 
+CONNECTION_CHOICES = (
+    (LinkChoice.AUTO, "Automatic"),
+    (LinkChoice.WIFI, "Wi-Fi only"),
+    (LinkChoice.ETHERNET, "Ethernet only"),
+)
+
+
 class SettingsPage(Page):
     testNotificationRequested = Signal()
     notificationStatusRequested = Signal()
@@ -180,6 +188,11 @@ class SettingsPage(Page):
         for minutes in INTERVAL_CHOICES_MIN:
             self.interval.addItem(f"{minutes} minute{'s' if minutes > 1 else ''}", userData=minutes)
         self.interval.currentIndexChanged.connect(lambda _i: self._apply())
+        self.connection = ComboBox()
+        for choice, label in CONNECTION_CHOICES:
+            self.connection.addItem(label, userData=choice.value)
+        self.connection.setAccessibleName("Connection to check")
+        self.connection.currentIndexChanged.connect(lambda _i: self._apply())
         self.network_change = SwitchButton()
         self.network_change.checkedChanged.connect(lambda _c: self._apply())
         self.startup = SwitchButton()
@@ -209,6 +222,14 @@ class SettingsPage(Page):
                 "Check interval",
                 "How often the current router is tested. Every minute while it's unstable.",
                 self.interval,
+            )
+        )
+        monitoring.addSettingCard(
+            _card(
+                FIF.CONNECT,
+                "Connection",
+                "Wi-Fi or Ethernet. Automatic checks the one Windows uses (past a VPN).",
+                self.connection,
             )
         )
         monitoring.addSettingCard(
@@ -363,6 +384,7 @@ class SettingsPage(Page):
         open_data.clicked.connect(lambda: data_dir and open_folder(data_dir))
         open_data.setEnabled(data_dir is not None)
         privacy = SettingCardGroup("Privacy and data", self.view)
+        self.location_card.setVisible(controller.has_wifi)  # only Wi-Fi scans need it
         privacy.addSettingCard(self.location_card)
         privacy.addSettingCard(
             _card(
@@ -502,6 +524,8 @@ class SettingsPage(Page):
         try:
             self.interval.setCurrentIndex(max(0, self.interval.findData(settings.interval_min)))
             self.network_change.setChecked(settings.check_on_network_change)
+            index = self.connection.findData(settings.connection.value)
+            self.connection.setCurrentIndex(max(0, index))
             self.test_all_switch.setChecked(settings.scheduled_test_all)
             self.auto_switch.setChecked(settings.auto_switch)
             index = self.test_all_interval.findData(settings.test_all_interval_h)
@@ -544,6 +568,7 @@ class SettingsPage(Page):
                 current,
                 interval_min=self.interval.currentData(),
                 check_on_network_change=self.network_change.isChecked(),
+                connection=LinkChoice(self.connection.currentData()),
                 scheduled_test_all=self.test_all_switch.isChecked(),
                 test_all_interval_h=self.test_all_interval.currentData(),
                 auto_switch=self.auto_switch.isChecked(),
