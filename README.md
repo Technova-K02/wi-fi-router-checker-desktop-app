@@ -46,6 +46,18 @@ uv run python -m router_checker.ui       # with a console for log output, for de
 - Settings > Export history saves every kept check as a CSV file.
 - Starting the app again brings the running window to the front.
 
+## One-file .exe
+
+```powershell
+uv run --group build python packaging/build.py
+```
+
+This builds `dist\RouterChecker.exe` (about 70 MB): the desktop app as a single file
+that runs without Python or admin rights. Copy it anywhere and start it; it uses the
+same data folder as `uv run`, so settings and history carry over. Each start unpacks
+it to a temporary folder first, so it takes a few seconds to open. The exe isn't
+signed. The console harness below isn't part of it.
+
 ## Console harness
 
 ```powershell
