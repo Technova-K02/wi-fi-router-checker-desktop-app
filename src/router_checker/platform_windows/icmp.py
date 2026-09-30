@@ -14,6 +14,7 @@ import threading
 from ctypes import POINTER, Structure, c_void_p, wintypes
 
 IP_SUCCESS = 0
+IP_TTL_EXPIRED_TRANSIT = 11013  # a router on the way answered
 INVALID_HANDLE_VALUE = c_void_p(-1).value
 PAYLOAD = b"RouterChecker-ping-payload-32byt"  # 32 bytes, like Windows ping
 
@@ -58,6 +59,10 @@ def ipv4_to_ipaddr(address: str) -> int:
     return int.from_bytes(socket.inet_aton(address), "little")
 
 
+def ipaddr_to_ipv4(value: int) -> str:
+    return socket.inet_ntoa(value.to_bytes(4, "little"))
+
+
 class WindowsPingService:
     def ping(
         self,
@@ -97,3 +102,29 @@ class WindowsPingService:
         finally:
             _iphlp.IcmpCloseHandle(handle)
         return results
+
+    def hop(self, address: str, ttl: int, timeout_ms: int, source: str | None = None) -> str | None:
+        """One echo toward ``address`` that may only travel ``ttl`` hops: the router
+        where it runs out answers "time exceeded" (or ``address`` itself if it's that
+        close). Its address, or None if nothing answered."""
+        handle = _iphlp.IcmpCreateFile()
+        if not handle or handle == INVALID_HANDLE_VALUE:
+            raise OSError(ctypes.get_last_error(), "IcmpCreateFile failed")
+        reply_size = ctypes.sizeof(ICMP_ECHO_REPLY) + len(PAYLOAD) + 8 + 64
+        reply = ctypes.create_string_buffer(reply_size)
+        payload = ctypes.create_string_buffer(PAYLOAD, len(PAYLOAD))
+        options = IP_OPTION_INFORMATION(Ttl=ttl)
+        src = ipv4_to_ipaddr(source) if source else 0
+        try:
+            n = _iphlp.IcmpSendEcho2Ex(
+                handle, None, None, None, src, ipv4_to_ipaddr(address), payload,
+                len(PAYLOAD), ctypes.byref(options), reply, reply_size, timeout_ms,
+            )  # fmt: skip
+        finally:
+            _iphlp.IcmpCloseHandle(handle)
+        if n == 0:
+            return None
+        echo = ICMP_ECHO_REPLY.from_buffer(reply)
+        if echo.Status not in (IP_SUCCESS, IP_TTL_EXPIRED_TRANSIT):
+            return None
+        return ipaddr_to_ipv4(echo.Address)
