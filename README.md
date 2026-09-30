@@ -37,6 +37,10 @@ uv run python -m router_checker.ui       # with a console for log output, for de
   5 minutes without keyboard or mouse input.
 - When another router scores clearly better, the dashboard and the "unstable" alert
   offer **Switch to** that router. If the switch fails, the app goes back.
+- Settings > Switch automatically (off by default) moves you to a router that Test all
+  measured as clearly better on 3 checks in a row, or right away when yours has been
+  down for 2 checks. It pauses 30 minutes after any switch, and goes back if the new
+  router fails its first check. The notification has a **Go back** button.
 - Alerts are Windows notifications with buttons (Open, Check now). They name a
   better router when one scores clearly higher. Settings has quiet hours (off by
   default), a test notification, and a link to Windows' notification settings.
