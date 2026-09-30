@@ -87,7 +87,7 @@ def bssid_order(
 
 
 def router_at(routers: Sequence[Router], address: str | None) -> Router | None:
-    """The router with this address behind the middle router."""
-    if address is None:
-        return None
-    return next((r for r in routers if r.address == address), None)
+    """The router with this address behind the middle router; None when none has it,
+    or when several do (then the address can't tell them apart)."""
+    found = [r for r in routers if address is not None and r.address == address]
+    return found[0] if len(found) == 1 else None

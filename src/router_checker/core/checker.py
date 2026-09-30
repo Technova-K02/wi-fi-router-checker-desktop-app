@@ -16,8 +16,10 @@ from router_checker.core.errors import (
     LocationPermissionError,
     WifiUnavailableError,
 )
-from router_checker.core.matching import Match, identify_current, router_state
+from router_checker.core.mac import MacAddress
+from router_checker.core.matching import Match, MatchMethod, identify_current, router_state
 from router_checker.core.measurements import to_record
+from router_checker.core.middle import UPSTREAM_HOPS, Endpoint, router_at
 from router_checker.core.models import (
     Alert,
     AlertKind,
@@ -60,6 +62,15 @@ from router_checker.core.wifi_info import best_entry_for, quality_to_rssi, same_
 
 HISTORY_SPAN = timedelta(days=7)
 PURGE_EVERY = timedelta(hours=6)
+HOP_TRIES = 2  # a lost probe shouldn't make the router unknown
+
+
+def _is_ip(text: str) -> bool:
+    try:
+        ipaddress.ip_address(text)
+    except ValueError:
+        return False
+    return True
 
 
 def _raise_if_stopped(stop: threading.Event | None) -> None:
@@ -85,6 +96,8 @@ class CycleReport:
     unstable: bool
     next_check_at: datetime
     linked: list[Router] = field(default_factory=list)
+    middle: Endpoint | None = None  # set when the PC is behind your middle router
+    upstream_ip: str | None = None  # then: the router in use, found one hop further
     confirmed_unstable: bool = False  # unstable for `unstable_checks` checks in a row
     recovering: bool = False  # stable again, "back to normal" not confirmed yet
 
@@ -162,6 +175,7 @@ class CheckEngine:
         rssi: int | None,
         timestamp: datetime | None = None,
         stop: threading.Event | None = None,
+        router_ip: str | None = None,
     ) -> FullTestResult:
         """Ping the gateway and every target at the same time, all sent from the
         checked adapter (so a cable or a VPN doesn't carry the pings instead).
@@ -170,23 +184,27 @@ class CheckEngine:
         If none of them answers (many VPNs block that), they're pinged again through
         the VPN, so a blocked ping doesn't look like an internet provider problem.
 
+        Behind a middle router, ``router_ip`` is the router in use: it's pinged as "the
+        router", and the middle router (the PC's gateway) separately.
+
         Raises CheckCancelled if ``stop`` was set meanwhile (the pings end early then).
         """
         s = self._settings
         now = timestamp or self._clock.now()
         source = gateway.local_ip
-        with ThreadPoolExecutor(max_workers=1 + len(s.targets)) as pool:
-            gw_future = pool.submit(
-                self._ping.ping,
-                gateway.gateway_ip,
-                s.pings_per_target,
-                s.ping_timeout_ms,
-                s.ping_spacing_ms,
-                stop=stop,
-                source=source,
-            )
+
+        def ping(address: str) -> list[float | None]:
+            return self._ping.ping(
+                address, s.pings_per_target, s.ping_timeout_ms, s.ping_spacing_ms,
+                stop=stop, source=source,
+            )  # fmt: skip
+
+        with ThreadPoolExecutor(max_workers=2 + len(s.targets)) as pool:
+            gw_future = pool.submit(ping, router_ip or gateway.gateway_ip)
+            middle_future = pool.submit(ping, gateway.gateway_ip) if router_ip else None
             target_futures = [pool.submit(self._test_target, t, stop, source) for t in s.targets]
             gateway_ping = summarize(gw_future.result())
+            middle_ping = summarize(middle_future.result()) if middle_future else None
             targets = tuple(f.result() for f in target_futures)
             via_vpn = False
             if gateway.vpn and targets and all(t.failed for t in targets):
@@ -206,7 +224,69 @@ class CheckEngine:
             rssi=rssi,
             signal_quality=connection.signal_quality if connection else None,
             via_vpn=via_vpn,
+            middle_ping=middle_ping,
         )
+
+    def upstream_address(
+        self, gateway: GatewayInfo, stop: threading.Event | None = None
+    ) -> str | None:
+        """Behind a middle router: the address of the router in use, from the second hop
+        toward the first internet target. None if it couldn't be found."""
+        s = self._settings
+        target = next((t for t in s.targets if _is_ip(t)), None)
+        if target is None and s.targets:
+            dns = self._dns.resolve(s.targets[0])
+            target = dns.addresses[0] if dns.ok else None
+        if target is None:
+            return None
+        for _ in range(HOP_TRIES):
+            _raise_if_stopped(stop)
+            try:
+                hop = self._ping.hop(target, UPSTREAM_HOPS, s.ping_timeout_ms, gateway.local_ip)
+            except (OSError, ValueError):
+                return None
+            if hop is not None:
+                return None if hop == target else hop  # the target itself: no router between
+        return None
+
+    def test_behind(
+        self,
+        router: Router,
+        gateway: GatewayInfo,
+        upstream_ip: str,
+        bssid: MacAddress | None,
+        stop: threading.Event | None = None,
+    ) -> tuple[CheckRecord, Router | None]:
+        """Full test of a router the middle router was switched to, saved like a check
+        (no alerts). Learns the router's address and the Wi-Fi MAC that worked; returns
+        the record and the router with what was learned, if anything is new."""
+        now = self._clock.now()
+        test = self.full_test(gateway, router, None, None, now, stop, router_ip=upstream_ip)
+        learned = self._learn_behind(router, upstream_ip, bssid, now)
+        record = self._save_test(test)
+        self._store.add_hourly(router.id, now, None, record.score)
+        return record, learned
+
+    def _learn_behind(
+        self, router: Router, address: str, bssid: MacAddress | None, now: datetime
+    ) -> Router | None:
+        current = self._settings.router(router.id) or router
+        learned = replace(current, address=address, middle_bssid=bssid or current.middle_bssid)
+        if learned == current:
+            return None
+        self.settings = self._settings.with_router(learned)
+        if current.address != address:
+            text = f"{learned.name} is at {address} behind the middle router"
+            others = [
+                r.name for r in self._settings.routers if r.address == address and r.id != router.id
+            ]
+            if others:
+                text += (
+                    f"; so is {', '.join(others)}, so Router Checker can't tell them apart "
+                    "there. Give the routers different addresses to fix this."
+                )
+            self._store.add_event(Event(now, router.id, "linked", text))
+        return learned
 
     def test_other(
         self,
@@ -258,13 +338,15 @@ class CheckEngine:
 
         gateway = self._netinfo.gateway(s.connection)
         wired = gateway is not None and gateway.wired
+        middle = s.middle if s.middle is not None and s.middle.is_gateway(gateway) else None
+        upstream = self.upstream_address(gateway, stop) if middle and gateway else None
 
         # On a cable the Wi-Fi connection (if any) isn't the one being checked, but
         # a scan still shows the other routers.
         connection: WifiConnection | None = None
         scan: list[ScanEntry] | None = None
         try:
-            if not wired:
+            if not wired and middle is None:
                 connection = self._wifi.current_connection()
             scan = self._wifi.scan(stop=stop)
         except LocationPermissionError:
@@ -273,12 +355,16 @@ class CheckEngine:
             wifi_error = str(exc)
 
         # Which router are we on? Full test on the current connection.
-        match = identify_current(s.routers, connection, gateway)
+        if middle is not None:  # behind the middle router: by the router's own address
+            found = router_at(s.routers, upstream)
+            match = Match(found, MatchMethod.ADDRESS if found else None)
+        else:
+            match = identify_current(s.routers, connection, gateway)
         current = match.router
         test: FullTestResult | None = None
         if gateway is not None:
             rssi = self._current_rssi(connection, scan)
-            test = self.full_test(gateway, current, connection, rssi, now, stop)
+            test = self.full_test(gateway, current, connection, rssi, now, stop, upstream)
         _raise_if_stopped(stop)  # nothing has been saved up to here
 
         # Link newly learned MACs to the current router.
@@ -334,7 +420,11 @@ class CheckEngine:
         self._store.add_scores(now, [(st.router.id, st.score) for st in statuses if st.score])
 
         # On a cable, switching Wi-Fi wouldn't change your connection: no advice.
-        recommendation = None if wired else recommend(scored, current.id if current else None, now)
+        recommendation = (
+            None
+            if wired and middle is None
+            else recommend(scored, current.id if current else None, now)
+        )
         if recommendation is not None:
             for st in statuses:
                 st.recommended = st.router.id == recommendation.router_id
@@ -384,6 +474,8 @@ class CheckEngine:
             unstable=unstable,
             next_check_at=next_check_at(now, now, s.interval_min, unstable),
             linked=linked,
+            middle=middle,
+            upstream_ip=upstream,
             confirmed_unstable=confirmed_unstable,
             recovering=recovering,
         )

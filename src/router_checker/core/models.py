@@ -259,6 +259,7 @@ class FullTestResult:
     rssi: int | None
     signal_quality: int | None
     via_vpn: bool = False  # the internet targets only answered through the VPN
+    middle_ping: PingStats | None = None  # to the middle router, when there is one
 
 
 @dataclass(frozen=True, slots=True)

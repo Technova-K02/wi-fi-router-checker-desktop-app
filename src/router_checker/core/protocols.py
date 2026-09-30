@@ -66,6 +66,11 @@ class PingService(Protocol):
         """
         ...
 
+    def hop(self, address: str, ttl: int, timeout_ms: int, source: str | None = None) -> str | None:
+        """The address of the router ``ttl`` hops toward ``address`` (it answers "time
+        exceeded"), or None if nothing answered."""
+        ...
+
 
 class DnsService(Protocol):
     def resolve(self, host: str) -> DnsResult: ...

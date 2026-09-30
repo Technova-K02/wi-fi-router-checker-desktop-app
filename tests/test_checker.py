@@ -7,11 +7,14 @@ import pytest
 from fakes import (
     CABLE_IP,
     GW,
+    MIDDLE,
+    NB_ADDRESS,
     NB_BSSID,
     NB_GW,
     NB_LAN,
     T0,
     WIFI_IP,
+    ZTE_ADDRESS,
     ZTE_BSSID,
     ZTE_LAN,
     FakeNetInfo,
@@ -19,7 +22,10 @@ from fakes import (
     cable_gateway,
     mac,
     make_engine,
+    middle_parts,
+    middle_routers,
     neighbor_connection,
+    record,
     sample_routers,
 )
 from router_checker.core.errors import CheckCancelled
@@ -367,3 +373,102 @@ def test_with_a_vpn_nothing_answering_at_all_is_still_an_internet_problem(router
     report = engine.run_cycle()
     assert report.record.verdict is Verdict.INTERNET_DOWN
     assert not report.record.via_vpn
+
+
+# --- behind a middle router -------------------------------------------------------------
+
+
+def behind(upstream=ZTE_ADDRESS, **settings):
+    s = Settings(
+        pings_per_target=4, routers=middle_routers(), middle_router=f"{MIDDLE}:8080", **settings
+    )
+    return make(s, **middle_parts(upstream))
+
+
+def test_behind_the_middle_router_the_router_in_use_is_found_one_hop_further() -> None:
+    engine, parts = behind()
+    report = engine.run_cycle()
+    assert report.middle is not None and report.upstream_ip == ZTE_ADDRESS
+    assert report.match.router.id == "zte"
+    assert report.match.method is MatchMethod.ADDRESS
+    assert report.connection is None
+    assert parts["ping"].hops[0] == ("1.1.1.1", 2)  # toward the first target, 2 hops
+    test = report.test
+    assert test.gateway_ping.median_ms == 2.0  # the ZTE, not the middle router
+    assert test.middle_ping.median_ms == 1.0
+    assert set(parts["ping"].sources) == {CABLE_IP}
+    assert report.record.link is LinkKind.ETHERNET and report.record.verdict is Verdict.OK
+    by_id = {s.router.id: s for s in report.statuses}
+    assert by_id["zte"].state is RouterState.ONLINE and by_id["zte"].is_current
+
+
+def test_behind_the_middle_router_switching_advice_is_given() -> None:
+    engine, parts = behind()
+    for minutes in (0, 6):  # the Neighbor measured much better in a Test all
+        parts["clock"].current = T0 + timedelta(minutes=minutes)
+        parts["store"].add_check(
+            record(router_id="nb", timestamp=T0 + timedelta(minutes=minutes), score=95.0)
+        )
+    parts["ping"].replies["1.1.1.1"] = [150.0, None, 190.0, 150.0]  # the ZTE is poor now
+    parts["clock"].current = T0 + timedelta(minutes=10)
+    report = engine.run_cycle()
+    assert report.recommendation is not None and report.recommendation.router_id == "nb"
+
+
+def test_an_unknown_router_behind_the_middle_router() -> None:
+    engine, _ = behind(upstream="172.16.0.1")
+    report = engine.run_cycle()
+    assert report.upstream_ip == "172.16.0.1"
+    assert report.match.router is None
+    assert report.test.gateway_ping.median_ms is None  # 172.16.0.1 doesn't answer the fake
+
+
+def test_when_the_second_hop_stays_silent_the_middle_router_is_pinged() -> None:
+    engine, parts = behind(upstream=None)
+    report = engine.run_cycle()
+    assert report.upstream_ip is None and report.match.router is None
+    assert report.test.gateway_ping.median_ms == 1.0 and report.test.middle_ping is None
+    assert len(parts["ping"].hops) == 2  # tried twice
+
+
+def test_with_only_domain_targets_the_hop_goes_toward_the_first_one() -> None:
+    engine, parts = behind(targets=("google.com",))
+    report = engine.run_cycle()
+    assert parts["ping"].hops[0] == ("142.250.0.1", 2)
+    assert report.match.router.id == "zte"
+
+
+def test_a_middle_router_elsewhere_changes_nothing(routers) -> None:
+    s = Settings(pings_per_target=4, routers=routers, middle_router=f"{MIDDLE}:8080")
+    engine, parts = make(s)  # on the ZTE's Wi-Fi, not behind the middle router
+    report = engine.run_cycle()
+    assert report.middle is None and parts["ping"].hops == []
+    assert report.match.method is MatchMethod.GATEWAY_MAC
+
+
+def test_a_router_switched_to_learns_its_address_and_wifi_mac() -> None:
+    zte, neighbor, gone = middle_routers()
+    fresh = replace(neighbor, address=None)
+    s = Settings(pings_per_target=4, routers=(zte, fresh, gone), middle_router=MIDDLE)
+    engine, parts = make(s, **middle_parts(NB_ADDRESS))
+    gateway = parts["netinfo"].gateway()
+    record, learned = engine.test_behind(fresh, gateway, NB_ADDRESS, mac(NB_BSSID))
+    assert record.router_id == "nb" and record.gateway_avg_ms == 4.0  # pinged the Neighbor
+    assert (learned.address, learned.middle_bssid) == (NB_ADDRESS, mac(NB_BSSID))
+    assert engine.settings.router("nb").address == NB_ADDRESS
+    assert parts["store"].events("nb", 1)[0].message == (
+        f"Neighbor is at {NB_ADDRESS} behind the middle router"
+    )
+    assert engine.test_behind(learned, gateway, NB_ADDRESS, mac(NB_BSSID))[1] is None
+
+
+def test_two_routers_with_the_same_address_cant_be_told_apart() -> None:
+    zte, neighbor, gone = middle_routers()
+    s = Settings(pings_per_target=4, routers=(zte, neighbor, gone), middle_router=MIDDLE)
+    engine, parts = make(s, **middle_parts(ZTE_ADDRESS))
+    engine.test_behind(neighbor, parts["netinfo"].gateway(), ZTE_ADDRESS, None)
+    assert "so is ZTE, so Router Checker can't tell them apart" in (
+        parts["store"].events("nb", 1)[0].message
+    )
+    report = engine.run_cycle()
+    assert report.match.router is None  # both are at that address now

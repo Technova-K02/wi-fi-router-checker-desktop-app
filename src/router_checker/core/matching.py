@@ -24,6 +24,7 @@ class MatchMethod(StrEnum):
     BSSID = "BSSID"
     SSID = "SSID"
     GATEWAY_MAC = "gateway MAC"
+    ADDRESS = "address behind the middle router"
 
 
 @dataclass(frozen=True, slots=True)

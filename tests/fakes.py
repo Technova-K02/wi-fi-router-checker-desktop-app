@@ -132,6 +132,12 @@ class FakePing:
     calls: list[str] = field(default_factory=list)
     sources: list[str | None] = field(default_factory=list)  # the source of each call
     blocked: set[tuple[str | None, str]] = field(default_factory=set)  # (source, address)
+    upstream: str | None = None  # behind a middle router: who answers at the second hop
+    hops: list[tuple[str, int]] = field(default_factory=list)
+
+    def hop(self, address: str, ttl: int, timeout_ms: int, source: str | None = None) -> str | None:
+        self.hops.append((address, ttl))
+        return self.upstream if ttl == 2 else None
 
     def ping(
         self,
@@ -346,3 +352,29 @@ def make_engine(settings, **overrides):
     parts = network_parts()
     parts.update(overrides)
     return CheckEngine(settings, **{k: parts[k] for k in ENGINE_PARTS}), parts
+
+
+# --- a middle router ----------------------------------------------------------------------
+
+MIDDLE = "192.168.8.1"
+MIDDLE_LAN = "88-88-88-88-88-88"
+ZTE_ADDRESS = GW  # the ZTE, seen from behind the middle router
+NB_ADDRESS = NB_GW
+
+
+def middle_parts(upstream: str | None = ZTE_ADDRESS) -> dict[str, object]:
+    """The PC on a cable into the middle router, which is on the ZTE."""
+    parts = network_parts()
+    parts["netinfo"].cable = cable_gateway(MIDDLE, MIDDLE_LAN)
+    parts["ping"].replies[MIDDLE] = [1.0]
+    parts["ping"].upstream = upstream
+    return parts
+
+
+def middle_routers() -> tuple[Router, Router, Router]:
+    zte, neighbor, gone = sample_routers()
+    return (
+        replace(zte, address=ZTE_ADDRESS),
+        replace(neighbor, address=NB_ADDRESS, macs=(mac(NB_BSSID),)),
+        gone,
+    )
