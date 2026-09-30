@@ -32,6 +32,7 @@ from router_checker.core.auto_switch import (
 from router_checker.core.auto_switch import Progress as AutoProgress
 from router_checker.core.checker import CycleReport
 from router_checker.core.mac import MacAddress
+from router_checker.core.middle import colon_mac
 from router_checker.core.models import (
     Band,
     BusyLevel,
@@ -45,6 +46,7 @@ from router_checker.core.models import (
     ScanEntry,
     Score,
     Verdict,
+    WifiConnection,
 )
 from router_checker.core.popularity import PopularTimes, busy_level
 from router_checker.core.quiet_hours import QuietHours, format_hhmm
@@ -52,6 +54,7 @@ from router_checker.core.scoring import LABEL_GOOD
 from router_checker.core.series import Series
 from router_checker.core.switching import (
     SKIP_TEXTS,
+    MiddleOrigin,
     Progress,
     Stage,
     SwitchResult,
@@ -437,30 +440,47 @@ def _quoted(ssid: str) -> str:
     return f"“{ssid}”"
 
 
+def _back_on(origin: WifiConnection | MiddleOrigin) -> str:
+    if isinstance(origin, MiddleOrigin):
+        return f"The middle router is back on {origin.router.name}."
+    return f"Back on {_quoted(origin.ssid)}."
+
+
 def confirm_test_all(plan: TestAllPlan) -> Message:
     """The question before Test all starts, or why it can't."""
     skipped = [f"• {s.router.name}: {SKIP_TEXTS[s.reason]}" for s in plan.skipped]
     if plan.blocker is not None:
         return Message(StatusLevel.WARNING, "Test all can't run", plan.blocker)
     if not plan.to_test:
-        text = "\n".join(
-            [
-                "Test all switches only to routers that have a Wi-Fi name, are in range, "
-                "and are saved in Windows.",
-                "",
-                *skipped,
-            ]
+        rule = (
+            "Test all switches your middle router only to routers that have a Wi-Fi MAC "
+            "and are in range."
+            if plan.via_middle
+            else "Test all switches only to routers that have a Wi-Fi name, are in range, "
+            "and are saved in Windows."
         )
-        return Message(StatusLevel.UNKNOWN, "No other router to test", text)
+        return Message(
+            StatusLevel.UNKNOWN, "No other router to test", "\n".join([rule, "", *skipped])
+        )
     origin = plan.origin
-    back = f"reconnects to {_quoted(origin.ssid)}" if origin else "disconnects Wi-Fi again"
     names = [c.router.name for c in plan.to_test]
-    if plan.current is not None:
-        names.append(f"{plan.current.name} (you're on it, so no switch)")
+    if isinstance(origin, MiddleOrigin):
+        names.append(f"{origin.router.name} (the middle router is on it, so no switch)")
+        intro = (
+            "Router Checker asks your middle router to switch to each router in turn, tests "
+            f"it, then switches it back to {origin.router.name}. The internet drops for a few "
+            "seconds at each switch, for every device behind the middle router."
+        )
+    else:
+        back = f"reconnects to {_quoted(origin.ssid)}" if origin else "disconnects Wi-Fi again"
+        if plan.current is not None:
+            names.append(f"{plan.current.name} (you're on it, so no switch)")
+        intro = (
+            f"Router Checker connects to each router in turn, tests it, then {back}. "
+            "Your internet drops for a few seconds at each switch."
+        )
     lines = [
-        f"Router Checker connects to each router in turn, tests it, then {back}. "
-        f"Your internet drops for a few seconds at each switch. "
-        f"This takes {fmt_duration(plan.estimated_seconds)}.",
+        f"{intro} This takes {fmt_duration(plan.estimated_seconds)}.",
         "",
         f"To test: {join_names(names)}.",
     ]
@@ -477,6 +497,8 @@ def progress_text(progress: Progress | None) -> str:
         return f"Connecting to {progress.name} {position}…"
     if progress.stage is Stage.TESTING:
         return f"Testing {progress.name} {position}…"
+    if progress.middle:
+        return f"Switching the middle router back to {progress.name}…"
     return f"Reconnecting to {_quoted(progress.name)}…"
 
 
@@ -504,6 +526,13 @@ def summarize_test_all(
         return Message(StatusLevel.BAD, "Test all stopped", f"{error or 'It failed'}.{where}")
     origin = result.plan.origin
     if not result.restored and not result.exited:
+        if isinstance(origin, MiddleOrigin):
+            return Message(
+                StatusLevel.BAD,
+                f"Couldn't switch back to {origin.router.name}",
+                f"Test all couldn't switch your middle router back. {_switch_back_hint(origin)}",
+                restore_failed=True,
+            )
         if origin is None:
             return Message(
                 StatusLevel.WARNING,
@@ -531,13 +560,15 @@ def summarize_test_all(
         router, score = best
         mine = " (the one you're on)" if current is not None and router.id == current.id else ""
         parts.append(f"Best: {router.name}{mine}, score {score.value}.")
-    if origin is None:
-        parts.append("Wi-Fi is disconnected again.")
-    else:
-        parts.append(f"Back on {_quoted(origin.ssid)}.")
+    parts.append("Wi-Fi is disconnected again." if origin is None else _back_on(origin))
     title = "Test all cancelled" if result.cancelled else "Test all finished"
     level = StatusLevel.WARNING if result.cancelled or result.failed else StatusLevel.GOOD
     return Message(level, title, " ".join(parts))
+
+
+def _switch_back_hint(origin: MiddleOrigin) -> str:
+    mac = colon_mac(origin.bssids[0]) if origin.bssids else "its Wi-Fi MAC"
+    return f"Switch it to {origin.router.name} from its own page (change_router?router={mac})."
 
 
 def _best_tested(report: CycleReport | None, ids: set[str]) -> tuple[Router, Score] | None:
@@ -561,8 +592,16 @@ def switch_summary(result: SwitchResult) -> Message:
     problem = f"{problem[:1].upper()}{problem[1:]}."
     origin = result.origin
     if result.restored:
-        back = f" Back on {_quoted(origin.ssid)}." if origin else ""
+        back = f" {_back_on(origin)}" if origin else ""
         return Message(StatusLevel.WARNING, f"Couldn't switch to {name}", problem + back)
+    if isinstance(origin, MiddleOrigin):
+        return Message(
+            StatusLevel.BAD,
+            f"Couldn't switch to {name}",
+            f"{problem} Couldn't switch the middle router back to {origin.router.name} "
+            f"either. {_switch_back_hint(origin)}",
+            restore_failed=True,
+        )
     where = _quoted(origin.ssid) if origin else "a network"
     return Message(
         StatusLevel.BAD,

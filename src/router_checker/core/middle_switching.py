@@ -272,13 +272,13 @@ class MiddleRunner(RunnerBase):
         progress: Callable[[Progress], None],
     ) -> tuple[Outcome, Router | None] | None:
         router = candidate.router
-        progress(Progress(Stage.CONNECTING, router.name, step, total))
+        progress(Progress(Stage.CONNECTING, router.name, step, total, middle=True))
         arrived, bssid, problem = self._switch_to(router, candidate.bssids, self._here, cancel)
         if arrived is None:
             return None if cancel.is_set() else (Outcome(router, None, problem), None)
         gateway, address = arrived
         self._here = address
-        progress(Progress(Stage.TESTING, router.name, step, total))
+        progress(Progress(Stage.TESTING, router.name, step, total, middle=True))
         try:
             record, learned = self._engine.test_behind(router, gateway, address, bssid, cancel)
         except CheckCancelled:
@@ -318,7 +318,7 @@ class MiddleRunner(RunnerBase):
             # When exiting there's no time to look first: just ask.
             if not exiting.is_set() and self.arrived(target, None, exiting) is not None:
                 return True
-            progress(Progress(Stage.RESTORING, origin.router.name, total + 1, total))
+            progress(Progress(Stage.RESTORING, origin.router.name, total + 1, total, middle=True))
             for _ in range(RESTORE_TRIES):
                 for bssid in origin.bssids:
                     try:

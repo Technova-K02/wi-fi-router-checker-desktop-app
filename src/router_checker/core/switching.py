@@ -238,6 +238,7 @@ class Progress:
     name: str  # the router, or the network being restored
     step: int  # 1-based router number; total + 1 while restoring
     total: int  # routers to switch to
+    middle: bool = False  # the middle router is being switched, not this PC's Wi-Fi
 
 
 @dataclass(frozen=True, slots=True)

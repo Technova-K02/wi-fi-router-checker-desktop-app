@@ -384,3 +384,41 @@ def test_tray_tooltip_shows_the_activity() -> None:
     report, _ = run()
     text = tray_tooltip(report, overall_status(report), True, "Testing Cafe (2 of 3)…")
     assert text.endswith("Testing Cafe (2 of 3)…") and "Checking now" not in text
+
+
+# --- behind a middle router -------------------------------------------------------------
+
+
+def _middle_plan():
+    from fakes import ZTE_ADDRESS, middle_routers
+    from router_checker.core.middle_switching import plan_middle
+
+    return plan_middle(middle_routers(), ZTE_ADDRESS, None)
+
+
+def test_test_all_behind_the_middle_router_says_who_drops() -> None:
+    message = confirm_test_all(_middle_plan())
+    assert message.title == "Test all routers?"
+    assert "asks your middle router to switch to each router in turn" in message.text
+    assert "switches it back to ZTE" in message.text
+    assert "for every device behind the middle router" in message.text
+    assert "ZTE (the middle router is on it, so no switch)" in message.text
+
+
+def test_middle_router_progress_and_results() -> None:
+    from router_checker.core.presentation import progress_text, summarize_test_all, switch_summary
+    from router_checker.core.switching import Progress, Stage, SwitchResult, TestAllResult
+
+    plan = _middle_plan()
+    restoring = Progress(Stage.RESTORING, "ZTE", 3, 2, middle=True)
+    assert progress_text(restoring) == "Switching the middle router back to ZTE…"
+    stuck = summarize_test_all(TestAllResult(plan, (), False, False), None)
+    assert stuck.title == "Couldn't switch back to ZTE" and stuck.restore_failed
+    assert "change_router?router=b0:0a:d5:9a:7b:b8" in stuck.text
+    done = summarize_test_all(TestAllResult(plan, (), True, False), None)
+    assert done.text.endswith("The middle router is back on ZTE.")
+    nb = plan.to_test[0].router
+    back = switch_summary(SwitchResult(nb, False, "no connection", True, plan.origin))
+    assert back.text == "No connection. The middle router is back on ZTE."
+    lost = switch_summary(SwitchResult(nb, False, "no connection", False, plan.origin))
+    assert "Couldn't switch the middle router back to ZTE either" in lost.text
