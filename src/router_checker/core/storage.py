@@ -176,6 +176,15 @@ class SqliteHistoryStore:
             ).fetchall()
         return [_check_from_row(row) for row in rows]
 
+    def checks_since(self, since: datetime | None = None) -> list[CheckRecord]:
+        """Every network's checks, oldest first (``since=None``: all that are kept)."""
+        cutoff = _ts(since) if since is not None else float("-inf")
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT * FROM checks WHERE ts >= ? ORDER BY ts, id", (cutoff,)
+            ).fetchall()
+        return [_check_from_row(row) for row in rows]
+
     def recent_checks(self, limit: int, router_id: str | None = None) -> list[CheckRecord]:
         """Newest first. ``router_id=None`` includes every network, even unknown ones."""
         query = "SELECT * FROM checks"

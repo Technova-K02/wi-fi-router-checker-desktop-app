@@ -126,6 +126,14 @@ def test_recent_checks_newest_first_all_networks(store) -> None:
     assert [c.timestamp for c in store.recent_checks(10, "r1")] == [T0]
 
 
+def test_checks_since_oldest_first_all_networks(store) -> None:
+    store.add_check(record(timestamp=T0 + timedelta(minutes=2), router_id="r2"))
+    store.add_check(record(timestamp=T0, router_id=None, ssid="Cafe"))
+    store.add_check(record(timestamp=T0 - timedelta(days=3)))
+    assert [c.router_id for c in store.checks_since()] == ["r1", None, "r2"]
+    assert [c.router_id for c in store.checks_since(T0)] == [None, "r2"]
+
+
 def test_upgrades_schema_1_database(tmp_path) -> None:
     import sqlite3
 
