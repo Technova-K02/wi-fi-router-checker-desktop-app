@@ -1,6 +1,6 @@
 [project]
 name = "router-checker"
-version = "0.5.0"
+version = "0.6.0"
 description = "Windows 11 app that monitors several Wi-Fi routers and warns when the current one becomes unstable."
 readme = "README.md"
 authors = [

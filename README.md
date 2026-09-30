@@ -48,19 +48,38 @@ uv run python -m router_checker.ui       # with a console for log output, for de
   the router's popular times; History compares every router's score. Hover a chart
   for the values at that time; the heatmap reads out each hour with the arrow keys.
 - Settings > Export history saves every kept check as a CSV file.
+- Settings > Start with Windows opens the app in the tray when you sign in. Task
+  Manager's Startup apps page shows it too, and turning it off there shows here.
 - Starting the app again brings the running window to the front.
 
-## One-file .exe
+## Installer and one-file .exe
 
 ```powershell
-uv run --group build python packaging/build.py
+winget install JRSoftware.InnoSetup      # once; for the installer (no admin rights)
+uv run --group build python packaging/build.py              # exe and installer
+uv run --group build python packaging/build.py --exe-only   # just the exe
 ```
 
 This builds `dist\RouterChecker.exe` (about 70 MB): the desktop app as a single file
 that runs without Python or admin rights. Copy it anywhere and start it; it uses the
 same data folder as `uv run`, so settings and history carry over. Each start unpacks
-it to a temporary folder first, so it takes a few seconds to open. The exe isn't
-signed. The console harness below isn't part of it.
+it to a temporary folder first, so it takes a few seconds to open. The console harness
+below isn't part of it.
+
+With Inno Setup 6 installed, it also builds `dist\RouterChecker-<version>-setup.exe`:
+
+- Installs for you only, without admin rights, into
+  `%LOCALAPPDATA%\Programs\Router Checker`, with a Start menu shortcut and an entry in
+  Settings > Apps. A first install offers "Start Router Checker when I sign in" (on)
+  and a desktop shortcut (off).
+- Installing a newer version over it closes the running app first
+  (`RouterChecker.exe --exit`) and keeps your settings and Start with Windows choice.
+- Uninstalling closes the app and removes its files, shortcuts, the Start with Windows
+  entry and the notification registration. It asks whether to delete your routers,
+  settings and history too (default: keep them); a silent uninstall keeps them.
+
+Neither file is signed, so Windows SmartScreen may warn the first time ("More info" >
+"Run anyway").
 
 ## Console harness
 
@@ -86,9 +105,12 @@ While Test all is switched away from your network, `test-all-restore.json` names
 network, so the next start can go back if the app was closed in the middle.
 Both the app and the CLI accept `--data-dir` to use another folder.
 
-The only thing written elsewhere is the notification sender registration,
-`HKCU\Software\Classes\AppUserModelId\RouterChecker.RouterChecker` (no admin
-rights needed), so notifications show "Router Checker" and its icon.
+Outside that folder the app writes only to the current user's registry (no admin
+rights): the notification sender registration,
+`HKCU\Software\Classes\AppUserModelId\RouterChecker.RouterChecker`, so notifications
+show "Router Checker" and its icon; and, when Start with Windows is on, the value
+`RouterChecker` under `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`. The
+uninstaller removes both.
 
 ## Development
 
