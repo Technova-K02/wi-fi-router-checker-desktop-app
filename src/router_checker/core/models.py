@@ -294,7 +294,7 @@ class Alert:
 
     @property
     def suggestion(self) -> str:
-        """"Try Cafe instead (score 85)." when a better router is known, else ""."""
+        """ "Try Cafe instead (score 85)." when a better router is known, else ""."""
         if self.kind is AlertKind.RECOVERED or self.recommended_name is None:
             return ""
         score = self.recommended_score
