@@ -16,7 +16,8 @@ Status levels (tray icon and dashboard):
 from __future__ import annotations
 
 import math
-from collections.abc import Iterable, Sequence
+import statistics
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from datetime import datetime, tzinfo
 from enum import StrEnum
@@ -38,6 +39,7 @@ from router_checker.core.models import (
 from router_checker.core.popularity import PopularTimes, busy_level
 from router_checker.core.quiet_hours import QuietHours, format_hhmm
 from router_checker.core.scoring import LABEL_GOOD
+from router_checker.core.series import Series
 
 DASH = "\N{EN DASH}"
 DAYS = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
@@ -224,6 +226,18 @@ def quiet_hours_text(quiet: QuietHours) -> str:
     if quiet.start == quiet.end:
         return "The start and end are the same, so nothing is muted."
     return f"No notifications from {format_hhmm(quiet.start)} to {format_hhmm(quiet.end)}."
+
+
+def series_summary(
+    series: Series, fmt: Callable[[float | None], str], *, lower_is_worse: bool = False
+) -> str:
+    """The numbers behind a chart line in words, e.g. "Internet: median 24 ms, highest
+    120 ms"."""
+    values = series.values
+    if not values:
+        return f"{series.name}: no data"
+    worst, word = (min(values), "lowest") if lower_is_worse else (max(values), "highest")
+    return f"{series.name}: median {fmt(statistics.median(values))}, {word} {fmt(worst)}"
 
 
 def fmt_hour(hour: int) -> str:
