@@ -55,6 +55,18 @@ uv run python -m router_checker.ui       # with a console for log output, for de
   the router's popular times; History compares every router's score. Hover a chart
   for the values at that time; the heatmap reads out each hour with the arrow keys.
 - Settings > Export history saves every kept check as a CSV file.
+- **Ethernet**: on a cable, the app checks the router you're plugged into, found by
+  its LAN MAC. Add it with **Use the router I'm connected to** in Add router, or
+  **Add it** on the dashboard. The score leaves out Wi-Fi signal. Test all, Switch to
+  and Switch automatically are off while you're wired, since your traffic goes over
+  the cable anyway. A PC without Wi-Fi works too (no location step, no scans).
+- Settings > Connection: Automatic (the connection Windows uses for the internet),
+  Wi-Fi only or Ethernet only. Pings always leave through the checked connection,
+  so a cable doesn't carry the pings meant for Wi-Fi.
+- **VPN**: the app checks the Wi-Fi or Ethernet connection underneath, pinging past
+  the VPN. If the VPN blocks that, the internet targets are pinged through the VPN
+  instead (the dashboard says so) rather than reporting an internet provider problem.
+  DNS lookups use whatever Windows uses, so they go through the VPN.
 - Settings > Start with Windows opens the app in the tray when you sign in. Task
   Manager's Startup apps page shows it too, and turning it off there shows here.
 - Starting the app again brings the running window to the front.
