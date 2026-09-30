@@ -26,6 +26,13 @@ uv run python -m router_checker.ui       # with a console for log output, for de
   taskbar to keep it visible.
 - Left-click the tray icon for the flyout, double-click to open the window.
 - Shortcuts: F5 check now, Ctrl+1 to Ctrl+4 switch pages, Ctrl+N add a router, Ctrl+Q exit.
+- Alerts are Windows notifications with buttons (Open, Check now). They name a
+  better router when one scores clearly higher. Settings has quiet hours (off by
+  default), a test notification, and a link to Windows' notification settings.
+- Router details show latency, packet loss and score charts (1 h / 24 h / 7 d) and
+  the router's popular times; History compares every router's score. Hover a chart
+  for the values at that time; the heatmap reads out each hour with the arrow keys.
+- Settings > Export history saves every kept check as a CSV file.
 - Starting the app again brings the running window to the front.
 
 ## Console harness
@@ -47,8 +54,12 @@ Don't run `watch` while the app is open; both would write the same settings file
 ## Data
 
 Everything stays in `%LOCALAPPDATA%\RouterChecker`: `settings.json`,
-`history.db` and `logs\app.log`. Both the app and the CLI accept `--data-dir`
-to use another folder.
+`history.db`, `logs\app.log` and `app-icon.png` (the icon notifications show).
+Both the app and the CLI accept `--data-dir` to use another folder.
+
+The only thing written elsewhere is the notification sender registration,
+`HKCU\Software\Classes\AppUserModelId\RouterChecker.RouterChecker` (no admin
+rights needed), so notifications show "Router Checker" and its icon.
 
 ## Development
 
