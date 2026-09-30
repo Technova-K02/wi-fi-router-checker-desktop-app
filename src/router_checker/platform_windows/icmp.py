@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import ctypes
 import socket
-import time
+import threading
 from ctypes import POINTER, Structure, c_void_p, wintypes
 
 IP_SUCCESS = 0
@@ -56,9 +56,16 @@ def ipv4_to_ipaddr(address: str) -> int:
 
 class WindowsPingService:
     def ping(
-        self, address: str, count: int, timeout_ms: int, spacing_ms: int
+        self,
+        address: str,
+        count: int,
+        timeout_ms: int,
+        spacing_ms: int,
+        stop: threading.Event | None = None,
     ) -> list[float | None]:
         dest = ipv4_to_ipaddr(address)
+        if stop is None:
+            stop = threading.Event()  # never set
         handle = _iphlp.IcmpCreateFile()
         if not handle or handle == INVALID_HANDLE_VALUE:
             raise OSError(ctypes.get_last_error(), "IcmpCreateFile failed")
@@ -68,8 +75,9 @@ class WindowsPingService:
         results: list[float | None] = []
         try:
             for i in range(count):
-                if i and spacing_ms:
-                    time.sleep(spacing_ms / 1000)
+                # The pause between echoes doubles as the check for "stop now".
+                if stop.wait(spacing_ms / 1000 if i else 0):
+                    break
                 n = _iphlp.IcmpSendEcho2(
                     handle, None, None, None, dest, payload, len(PAYLOAD), None,
                     reply, reply_size, timeout_ms,

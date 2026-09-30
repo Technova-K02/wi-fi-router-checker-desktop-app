@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import itertools
 import logging
+import threading
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
@@ -159,6 +160,7 @@ class AppController(QObject):
         self._check_again = False
         self._engine_stale = False
         self._stopped = False
+        self._stop = threading.Event()  # tells a running check or scan to end early
         self._last_gateway: tuple[str, str] | None = None
         self.last_snapshot: Snapshot | None = None
         self.last_failure: str | None = None
@@ -200,8 +202,10 @@ class AppController(QObject):
         self.check_now()
 
     def shutdown(self, wait_ms: int = 15000) -> None:
-        """Stop timers and wait (up to ``wait_ms``) for a running check to end."""
+        """Stop timers, end a running check early (nothing from it is saved) and wait
+        up to ``wait_ms`` for the workers; that usually takes well under a second."""
         self._stopped = True
+        self._stop.set()
         for timer in (self._timer, self._poll, self._settle):
             timer.stop()
         self._stop_watcher()
@@ -225,7 +229,7 @@ class AppController(QObject):
 
     def _run_cycle(self) -> tuple[CycleReport, dict[str, list[ScorePoint]]]:
         """Runs in a worker thread."""
-        report = self._engine.run_cycle()
+        report = self._engine.run_cycle(stop=self._stop)
         since = report.timestamp - SPARKLINE_SPAN
         sparklines = {r.id: self._store.scores(r.id, since) for r in report.settings.routers}
         return report, sparklines
@@ -368,10 +372,10 @@ class AppController(QObject):
     def scan_networks(
         self, on_done: Callable[[ScanResult], None], on_error: Callable[[BaseException], None]
     ) -> None:
-        wifi = self._services.wifi
+        wifi, stop = self._services.wifi, self._stop
 
         def work() -> ScanResult:
-            entries = wifi.scan()
+            entries = wifi.scan(stop=stop)
             try:
                 profiles = wifi.saved_profiles()
             except Exception:

@@ -1,9 +1,12 @@
+import threading
 from dataclasses import replace
+from datetime import timedelta
 
 import pytest
 
 from fakes import (
     GW,
+    T0,
     ZTE_BSSID,
     ZTE_LAN,
     FakeNetInfo,
@@ -12,6 +15,7 @@ from fakes import (
     make_engine,
     sample_routers,
 )
+from router_checker.core.errors import CheckCancelled
 from router_checker.core.matching import MatchMethod
 from router_checker.core.models import (
     AlertKind,
@@ -186,7 +190,7 @@ def test_confirmed_and_recovering_flags(routers) -> None:
 
 def test_target_the_ping_service_rejects_counts_as_lost(routers) -> None:
     class PickyPing:
-        def ping(self, address, count, timeout_ms, spacing_ms):
+        def ping(self, address, count, timeout_ms, spacing_ms, stop=None):
             if address == "8.8.8.8":
                 raise OSError("unsupported address")
             return [2.0] * count
@@ -196,3 +200,30 @@ def test_target_the_ping_service_rejects_counts_as_lost(routers) -> None:
     by_target = {t.target: t for t in report.test.targets}
     assert by_target["8.8.8.8"].ping.all_lost
     assert not by_target["1.1.1.1"].ping.all_lost
+
+
+def test_a_stopped_check_raises_and_saves_nothing(routers) -> None:
+    settings = Settings(pings_per_target=4, routers=routers)
+    engine, parts = make(settings)
+    fake_ping = parts["ping"]
+    real_ping = fake_ping.ping
+    exiting = threading.Event()
+
+    def ping_then_exit(*args, **kwargs):
+        exiting.set()  # the user exits while the pings run
+        return real_ping(*args, **kwargs)
+
+    fake_ping.ping = ping_then_exit
+    with pytest.raises(CheckCancelled):
+        engine.run_cycle(stop=exiting)
+
+    store = parts["store"]
+    assert store.recent_checks(10) == []
+    assert store.events(None, 10) == []  # not even the Wi-Fi MAC it would have linked
+    assert store.scores("zte", T0 - timedelta(days=1)) == []
+    assert engine.settings.router("zte") == settings.router("zte")
+
+    fake_ping.ping = real_ping
+    report = engine.run_cycle()  # the next check runs normally
+    assert report.record.verdict is Verdict.OK
+    assert [r.id for r in report.linked] == ["zte"]

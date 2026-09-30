@@ -84,3 +84,4 @@ A Windows 11 desktop app that monitors several Wi-Fi routers I have access to, s
 - Status colors, always with a glyph and text: green = stable (score 60+); yellow = one unstable check not yet confirmed, recovering, or score under 60; red = unstable 2 checks in a row, router not responding, or internet provider problem; grey = not connected, unknown network, no data, or the check failed.
 - Re-check soon after Windows switches networks (route-change notification, 5 s settle, only if the gateway IP/MAC changed). On by default, with an on/off switch in Settings. The user asked for that switch, so give other automatic behaviors one too.
 - Until Phase 3 brings windows-toasts, alerts use the tray icon's basic notifications.
+- Exit (2026-09-30): besides the tray menu, an Exit button on the dashboard and Ctrl+Q. Exiting stops a running check at once (the process ends within about a second); nothing from a stopped check is saved.

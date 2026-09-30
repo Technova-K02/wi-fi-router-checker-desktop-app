@@ -15,3 +15,7 @@ class LocationPermissionError(RouterCheckerError):
 
 class WifiUnavailableError(RouterCheckerError):
     """No usable Wi-Fi adapter (missing, radio off, or WLAN service stopped)."""
+
+
+class CheckCancelled(RouterCheckerError):
+    """The check was stopped (the app is exiting) before anything from it was saved."""

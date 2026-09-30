@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import ctypes
 import threading
+import time
 import uuid
 from ctypes import POINTER, Structure, byref, c_void_p, wintypes
 
@@ -42,6 +43,7 @@ WLAN_NOTIFICATION_ACM_SCAN_COMPLETE = 7
 WLAN_NOTIFICATION_ACM_SCAN_FAIL = 8
 
 SCAN_WAIT_S = 4.0
+SCAN_POLL_S = 0.1  # how often a scan wait looks at its stop flag
 
 
 class GUID(Structure):
@@ -342,14 +344,17 @@ class WindowsWifiService:
             finally:
                 _wlan.WlanFreeMemory(data)
 
-    def scan(self, wait_s: float = SCAN_WAIT_S) -> list[ScanEntry]:
-        """Request a fresh scan, wait for it to finish (or ``wait_s``), read the BSS list."""
+    def scan(
+        self, stop: threading.Event | None = None, wait_s: float = SCAN_WAIT_S
+    ) -> list[ScanEntry]:
+        """Request a fresh scan, wait for it to finish (at most ``wait_s``, and no longer
+        once ``stop`` is set), then read the BSS list."""
         with self._lock:
             guid = self._interface()
-            self._request_scan(guid, wait_s)
+            self._request_scan(guid, wait_s, stop)
             return self._bss_list(guid)
 
-    def _request_scan(self, guid: GUID, wait_s: float) -> None:
+    def _request_scan(self, guid: GUID, wait_s: float, stop: threading.Event | None) -> None:
         done = threading.Event()
 
         @WLAN_NOTIFICATION_CALLBACK
@@ -371,7 +376,10 @@ class WindowsWifiService:
         )
         try:
             _check(_wlan.WlanScan(client, byref(guid), None, None, None), "WlanScan")
-            done.wait(wait_s if registered else min(wait_s, 2.0))
+            deadline = time.monotonic() + (wait_s if registered else min(wait_s, 2.0))
+            while not done.wait(SCAN_POLL_S):
+                if (stop is not None and stop.is_set()) or time.monotonic() >= deadline:
+                    break
         finally:
             if registered:
                 _wlan.WlanRegisterNotification(

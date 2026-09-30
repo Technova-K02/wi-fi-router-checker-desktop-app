@@ -2,6 +2,7 @@
 
 import json
 import threading
+import time
 from dataclasses import replace
 from datetime import timedelta
 
@@ -50,17 +51,21 @@ def make(tmp_path):
 
 
 class GatedPing:
-    """Blocks every ping until released, so a check stays 'running'."""
+    """Blocks every ping until released (or stopped), so a check stays 'running'."""
 
     def __init__(self, inner):
         self.inner = inner
         self.gate = threading.Event()
         self.threads = set()
 
-    def ping(self, *args):
+    def ping(self, *args, stop=None):
         self.threads.add(threading.current_thread())
-        assert self.gate.wait(TIMEOUT / 1000)
-        return self.inner.ping(*args)
+        deadline = time.monotonic() + TIMEOUT / 1000
+        while not self.gate.wait(0.01):
+            if stop is not None and stop.is_set():
+                return []
+            assert time.monotonic() < deadline
+        return self.inner.ping(*args, stop=stop)
 
 
 def test_check_runs_in_worker_and_reports(qtbot, make) -> None:
@@ -224,3 +229,19 @@ def test_background_reads(qtbot, make) -> None:
     assert len(history.checks) == 1
     assert details.last_check is not None and details.last_seen is not None
     assert len(scan.entries) == 3
+
+
+def test_shutdown_ends_a_running_check_quickly(qtbot, make) -> None:
+    gated = GatedPing(network_parts()["ping"])  # never released
+    controller, _, parts = make(ping=gated)
+    finished = []
+    controller.checkFinished.connect(finished.append)
+    controller.check_now()
+    qtbot.waitUntil(lambda: bool(gated.threads), timeout=TIMEOUT)  # the pings are running
+    started = time.monotonic()
+    controller.shutdown()
+    assert time.monotonic() - started < 1.0
+    assert controller._pool.activeThreadCount() == 0
+    qtbot.wait(100)
+    assert not finished
+    assert parts["store"].recent_checks(10) == []

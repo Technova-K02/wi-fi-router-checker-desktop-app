@@ -5,12 +5,17 @@ from __future__ import annotations
 
 import ipaddress
 import statistics
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 
 from router_checker.core.alerts import AlertEngine
-from router_checker.core.errors import LocationPermissionError, WifiUnavailableError
+from router_checker.core.errors import (
+    CheckCancelled,
+    LocationPermissionError,
+    WifiUnavailableError,
+)
 from router_checker.core.matching import Match, identify_current, router_state
 from router_checker.core.measurements import to_record
 from router_checker.core.models import (
@@ -54,6 +59,11 @@ from router_checker.core.wifi_info import best_entry_for, quality_to_rssi, same_
 
 HISTORY_SPAN = timedelta(days=7)
 PURGE_EVERY = timedelta(hours=6)
+
+
+def _raise_if_stopped(stop: threading.Event | None) -> None:
+    if stop is not None and stop.is_set():
+        raise CheckCancelled("the check was stopped")
 
 
 @dataclass(slots=True)
@@ -119,8 +129,10 @@ class CheckEngine:
 
     # --- full test ----------------------------------------------------------
 
-    def _test_target(self, target: str) -> TargetResult:
+    def _test_target(self, target: str, stop: threading.Event | None) -> TargetResult:
         s = self._settings
+        if stop is not None and stop.is_set():
+            return TargetResult(target, None, None, None)  # discarded: full_test raises
         try:
             ipaddress.ip_address(target)
         except ValueError:
@@ -132,7 +144,7 @@ class CheckEngine:
             dns, address = None, target
         try:
             samples = self._ping.ping(
-                address, s.pings_per_target, s.ping_timeout_ms, s.ping_spacing_ms
+                address, s.pings_per_target, s.ping_timeout_ms, s.ping_spacing_ms, stop=stop
             )
         except (OSError, ValueError):  # e.g. an address the ping service can't handle
             samples = [None] * s.pings_per_target
@@ -145,7 +157,12 @@ class CheckEngine:
         connection: WifiConnection | None,
         rssi: int | None,
         timestamp: datetime | None = None,
+        stop: threading.Event | None = None,
     ) -> FullTestResult:
+        """Ping the gateway and every target at the same time.
+
+        Raises CheckCancelled if ``stop`` was set meanwhile (the pings end early then).
+        """
         s = self._settings
         now = timestamp or self._clock.now()
         with ThreadPoolExecutor(max_workers=1 + len(s.targets)) as pool:
@@ -155,10 +172,12 @@ class CheckEngine:
                 s.pings_per_target,
                 s.ping_timeout_ms,
                 s.ping_spacing_ms,
+                stop=stop,
             )
-            target_futures = [pool.submit(self._test_target, t) for t in s.targets]
+            target_futures = [pool.submit(self._test_target, t, stop) for t in s.targets]
             gateway_ping = summarize(gw_future.result())
             targets = tuple(f.result() for f in target_futures)
+        _raise_if_stopped(stop)
         return FullTestResult(
             timestamp=now,
             router_id=router.id if router else None,
@@ -173,7 +192,8 @@ class CheckEngine:
 
     # --- cycle --------------------------------------------------------------
 
-    def run_cycle(self) -> CycleReport:
+    def run_cycle(self, stop: threading.Event | None = None) -> CycleReport:
+        """Run one check. Once ``stop`` is set it raises CheckCancelled and saves nothing."""
         now = self._clock.now()
         s = self._settings
         location_allowed = True
@@ -185,16 +205,23 @@ class CheckEngine:
         scan: list[ScanEntry] | None = None
         try:
             connection = self._wifi.current_connection()
-            scan = self._wifi.scan()
+            scan = self._wifi.scan(stop=stop)
         except LocationPermissionError:
             location_allowed = False
         except WifiUnavailableError as exc:
             wifi_error = str(exc)
 
-        # Which router are we on? Link newly learned MACs to it.
+        # Which router are we on? Full test on the current connection.
         match = identify_current(s.routers, connection, gateway)
-        linked: list[Router] = []
         current = match.router
+        test: FullTestResult | None = None
+        if gateway is not None:
+            rssi = self._current_rssi(connection, scan)
+            test = self.full_test(gateway, current, connection, rssi, now, stop)
+        _raise_if_stopped(stop)  # nothing has been saved up to here
+
+        # Link newly learned MACs to the current router.
+        linked: list[Router] = []
         if current is not None and match.macs_to_link:
             current = current.with_macs(*match.macs_to_link)
             s = s.with_router(current)
@@ -205,12 +232,8 @@ class CheckEngine:
                 Event(now, current.id, "linked", f"Linked {macs} to {current.name}")
             )
 
-        # Full test on the current connection.
-        test: FullTestResult | None = None
         record: CheckRecord | None = None
-        if gateway is not None:
-            rssi = self._current_rssi(connection, scan)
-            test = self.full_test(gateway, current, connection, rssi, now)
+        if test is not None:
             record = to_record(test, s.thresholds, s.pings_per_target)
             record = replace(record, score=check_score(record))
             self._store.add_check(record)

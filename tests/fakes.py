@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 
@@ -86,7 +87,7 @@ class FakeWifi:
             raise LocationPermissionError("denied")
         return self.connection
 
-    def scan(self) -> list[ScanEntry]:
+    def scan(self, stop: threading.Event | None = None) -> list[ScanEntry]:
         if self.denied:
             raise LocationPermissionError("denied")
         return list(self.entries)
@@ -116,15 +117,23 @@ class FakeWatcher:
 
 @dataclass
 class FakePing:
-    """Returns a fixed series per address; unknown addresses time out."""
+    """Returns a fixed series per address; unknown addresses time out. A set ``stop``
+    ends the series at once, like the real service."""
 
     replies: dict[str, list[float | None]] = field(default_factory=dict)
     calls: list[str] = field(default_factory=list)
 
     def ping(
-        self, address: str, count: int, timeout_ms: int, spacing_ms: int
+        self,
+        address: str,
+        count: int,
+        timeout_ms: int,
+        spacing_ms: int,
+        stop: threading.Event | None = None,
     ) -> list[float | None]:
         self.calls.append(address)
+        if stop is not None and stop.is_set():
+            return []
         series = self.replies.get(address, [None])
         return [series[i % len(series)] for i in range(count)]
 

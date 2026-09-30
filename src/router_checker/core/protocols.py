@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import threading
 from collections.abc import Sequence
 from datetime import datetime
 from typing import Protocol
@@ -35,8 +36,8 @@ class WifiService(Protocol):
 
     def current_connection(self) -> WifiConnection | None: ...
 
-    def scan(self) -> list[ScanEntry]:
-        """Trigger a scan, wait briefly for it, and return the BSS list."""
+    def scan(self, stop: threading.Event | None = None) -> list[ScanEntry]:
+        """Trigger a scan, wait briefly for it (less once ``stop`` is set), return the BSS list."""
         ...
 
     def saved_profiles(self) -> list[str]: ...
@@ -48,9 +49,17 @@ class WifiService(Protocol):
 
 class PingService(Protocol):
     def ping(
-        self, address: str, count: int, timeout_ms: int, spacing_ms: int
+        self,
+        address: str,
+        count: int,
+        timeout_ms: int,
+        spacing_ms: int,
+        stop: threading.Event | None = None,
     ) -> list[float | None]:
-        """RTT in ms per echo request, None for each lost one. ``address`` is an IP."""
+        """RTT in ms per echo request, None for each lost one. ``address`` is an IP.
+
+        Once ``stop`` is set it returns early, with fewer than ``count`` results.
+        """
         ...
 
 
