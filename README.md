@@ -10,6 +10,13 @@ for the full project brief and the decisions made so far.
 uv sync
 ```
 
+Without uv, `requirements.txt` pins the same packages (app, tests, lint and build):
+
+```powershell
+py -3.13 -m venv .venv
+.venv\Scripts\pip install -r requirements.txt
+```
+
 ## Desktop app
 
 ```powershell

@@ -1,0 +1,36 @@
+# Everything in .venv on Windows (app, dev and build groups), pinned.
+# Regenerate: uv pip freeze --exclude-editable, then keep this header and -e .
+# Use: python -m venv .venv; .venv\Scripts\pip install -r requirements.txt
+# (uv sync --all-groups does the same from uv.lock.)
+-e .
+altgraph==0.17.5
+colorama==0.4.6
+darkdetect==0.8.0
+iniconfig==2.3.0
+numpy==2.5.3
+packaging==26.3
+pefile==2024.8.26
+pluggy==1.6.0
+pygments==2.21.0
+pyinstaller==6.22.3
+pyinstaller-hooks-contrib==2026.8
+pyqtgraph==0.14.0
+pyside6==6.11.2
+pyside6-addons==6.11.2
+pyside6-essentials==6.11.2
+pyside6-fluent-widgets==1.11.3
+pysidesix-frameless-window==0.8.2
+pytest==9.1.1
+pytest-qt==4.5.0
+pywin32==312
+pywin32-ctypes==0.2.3
+ruff==0.16.9
+setuptools==84.0.0
+shiboken6==6.11.2
+typing-extensions==4.16.0
+windows-toasts==1.3.1
+winrt-runtime==3.2.1
+winrt-windows-data-xml-dom==3.2.1
+winrt-windows-foundation==3.2.1
+winrt-windows-foundation-collections==3.2.1
+winrt-windows-ui-notifications==3.2.1
