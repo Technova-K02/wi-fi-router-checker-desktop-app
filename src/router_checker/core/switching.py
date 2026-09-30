@@ -381,8 +381,16 @@ class SwitchRunner:
 
     # --- one switch ---------------------------------------------------------------------
 
-    def switch(self, plan: TestAllPlan, router: Router, *, stop: threading.Event) -> SwitchResult:
-        """Connect to ``router`` (the Switch button). If that fails, go back."""
+    def switch(
+        self,
+        plan: TestAllPlan,
+        router: Router,
+        *,
+        stop: threading.Event,
+        reason: str | None = None,  # an automatic switch: why, for the event log
+    ) -> SwitchResult:
+        """Connect to ``router`` (the Switch button, or automatically). If that fails,
+        go back."""
         candidate = next((c for c in plan.to_test if c.router.id == router.id), None)
         if candidate is None:
             return SwitchResult(router, False, switch_blocker(plan, router), origin=plan.origin)
@@ -394,7 +402,10 @@ class SwitchRunner:
             joined, problem = None, f"Windows couldn't connect: {exc}"
         now = self._clock.now()
         if joined is not None:
-            self._store.add_event(Event(now, router.id, SWITCH_EVENT, f"Switched to {router.name}"))
+            text = f"Switched to {router.name}"
+            if reason:
+                text = f"Switched automatically to {router.name}: {reason}"
+            self._store.add_event(Event(now, router.id, SWITCH_EVENT, text))
             return SwitchResult(router, True, origin=plan.origin)
         restored = self._restore(plan.origin, 0, stop, lambda _p: None)
         self._store.add_event(

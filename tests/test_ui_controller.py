@@ -478,3 +478,91 @@ def test_start_goes_back_after_an_interrupted_test_all(qtbot, make, tmp_path) ->
     assert not (tmp_path / MARKER_FILE).exists()
     messages = [e.message for e in parts["store"].events(None, 5)]
     assert "Went back to “ZTE-Home” after an interrupted Test all" in messages
+
+
+# --- automatic switching --------------------------------------------------------------------
+
+
+class NetworkPing:
+    """Internet pings behave like the network you're on: bad on the ZTE, good elsewhere,
+    and nothing answers on a network in ``broken``."""
+
+    def __init__(self, parts):
+        self.inner, self.wifi, self.broken = parts["ping"], parts["wifi"], set()
+
+    def ping(self, address, count, timeout_ms, spacing_ms, stop=None):
+        ssid = self.wifi.connection.ssid if self.wifi.connection else None
+        if ssid in self.broken:
+            return [None] * count
+        if ssid == "ZTE-Home" and address != GW:
+            return [150.0, None, 190.0, 150.0][:count]
+        return self.inner.ping(address, count, timeout_ms, spacing_ms, stop=stop)
+
+
+def auto_parts(**settings):
+    parts = network_parts()
+    parts["ping"] = NetworkPing(parts)
+    return parts, Settings(pings_per_target=4, routers=sample_routers(), **settings)
+
+
+def test_the_app_switches_to_a_router_that_stays_better(qtbot, make) -> None:
+    parts, settings = auto_parts(auto_switch=True)
+    controller, _, _ = make(settings, **parts)
+    with qtbot.waitSignal(controller.testAllFinished, timeout=TIMEOUT):
+        controller.start_test_all(plan_now(qtbot, controller))  # measures the Neighbor
+    assert controller.last_snapshot.report.recommendation.router_id == "nb"  # check 1 of 3
+    assert controller.auto_switch_text == "Neighbor has been better for 1 of 3 checks."
+    with qtbot.waitSignal(controller.checkFinished, timeout=TIMEOUT):
+        controller.check_now()
+    with qtbot.waitSignal(controller.autoSwitched, timeout=TIMEOUT) as switched:
+        controller.check_now()  # the third: switch
+    message = switched.args[0]
+    assert (message.title, message.back_to) == ("Switched to Neighbor", "zte")
+    assert controller.last_snapshot.report.connection.ssid == "Neighbor"
+    assert controller.auto_switch_text.startswith("Automatic switching pauses for 30 more min")
+    assert (
+        parts["store"]
+        .events("nb", 1)[0]
+        .message.startswith(
+            "Switched automatically to Neighbor: Neighbor was clearly better for 3 checks in a row"
+        )
+    )
+
+
+def test_it_goes_back_when_the_new_router_fails_right_away(qtbot, make) -> None:
+    parts, settings = auto_parts(auto_switch=True)
+    connects = []
+
+    def break_neighbor_on_the_second_visit(name):
+        connects.append(name)
+        if connects.count("Neighbor") == 2:  # Test all went fine; the switch doesn't
+            parts["ping"].broken.add("Neighbor")
+
+    parts["switcher"].on_connect = break_neighbor_on_the_second_visit
+    controller, _, _ = make(settings, **parts)
+    with qtbot.waitSignal(controller.testAllFinished, timeout=TIMEOUT):
+        controller.start_test_all(plan_now(qtbot, controller))
+    messages = []
+    controller.autoSwitched.connect(messages.append)
+    for _ in range(2):
+        with qtbot.waitSignal(controller.checkFinished, timeout=TIMEOUT):
+            controller.check_now()
+    qtbot.waitUntil(lambda: len(messages) == 2 and not controller.is_busy, timeout=TIMEOUT)
+    assert [m.title for m in messages] == ["Switched to Neighbor", "Back on ZTE"]
+    assert parts["switcher"].calls == [
+        "connect Neighbor", "connect ZTE-Home", "connect Neighbor", "connect ZTE-Home"
+    ]  # fmt: skip
+    assert controller.last_snapshot.report.connection.ssid == "ZTE-Home"
+
+
+def test_nothing_switches_while_it_is_off(qtbot, make) -> None:
+    parts, settings = auto_parts()  # off by default
+    controller, _, _ = make(settings, **parts)
+    with qtbot.waitSignal(controller.testAllFinished, timeout=TIMEOUT):
+        controller.start_test_all(plan_now(qtbot, controller))
+    with qtbot.assertNotEmitted(controller.autoSwitched, wait=300):
+        for _ in range(4):
+            with qtbot.waitSignal(controller.checkFinished, timeout=TIMEOUT):
+                controller.check_now()
+    assert controller.auto_switch_text is None
+    assert parts["switcher"].calls == ["connect Neighbor", "connect ZTE-Home"]  # Test all only

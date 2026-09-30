@@ -22,6 +22,7 @@ from typing import Any
 
 from PySide6.QtCore import QObject, QRunnable, QThreadPool, QTimer, Signal, SignalInstance, Slot
 
+from router_checker.core.auto_switch import Action, AutoSwitchPolicy, CheckView, Decision
 from router_checker.core.checker import CheckEngine, CycleReport
 from router_checker.core.errors import LocationPermissionError, WifiUnavailableError
 from router_checker.core.export import write_checks_csv
@@ -39,6 +40,9 @@ from router_checker.core.presentation import (
     Message,
     Status,
     StatusLevel,
+    auto_switch_message,
+    auto_switch_progress,
+    auto_switch_reason,
     overall_status,
     progress_steps,
     progress_text,
@@ -60,6 +64,7 @@ from router_checker.core.scheduler import effective_interval, scheduled_test_all
 from router_checker.core.series import RouterCharts, ScoreLine, max_gap, router_charts, score_lines
 from router_checker.core.settings import Settings, save_settings
 from router_checker.core.switching import (
+    SWITCH_EVENT,
     TEST_ALL_EVENT,
     MarkerFile,
     Progress,
@@ -159,6 +164,8 @@ class _Run:
     outcome: TestAllResult | SwitchResult | None = None
     error: str | None = None
     finishing: bool = False  # the closing regular check runs
+    decision: Decision | None = None  # set for an automatic switch
+    from_id: str | None = None  # the router a switch leaves
 
 
 def gateway_key(gateway: GatewayInfo | None) -> tuple[str, str] | None:
@@ -201,6 +208,7 @@ class AppController(QObject):
     activityChanged = Signal()  # a run started, progressed or ended: see ``activity``
     testAllFinished = Signal(object, bool)  # Message, scheduled
     switchFinished = Signal(object)  # Message
+    autoSwitched = Signal(object)  # Message: an automatic switch (or going back) ended
 
     _taskDone = Signal(int, object)
     _taskFailed = Signal(int, object)
@@ -263,6 +271,7 @@ class AppController(QObject):
         self._queued: tuple[TestAllPlan, bool] | None = None  # Test all waiting for a check
         self._planning_scheduled = False
         self._last_test_all: datetime | None = None
+        self._policy = AutoSwitchPolicy()
         self.last_snapshot: Snapshot | None = None
         self.last_failure: str | None = None
         self.next_check_at: datetime | None = None
@@ -365,6 +374,7 @@ class AppController(QObject):
         self._schedule_timer.start()
         store = self._store
         self.run_task(lambda: store.last_event(TEST_ALL_EVENT), self._loaded_last_test_all)
+        self.run_task(lambda: store.last_event(SWITCH_EVENT), self._loaded_last_switch)
         if self._runner is not None and self._marker is not None and self._marker.path.exists():
             self._recover()
         else:
@@ -470,6 +480,8 @@ class AppController(QObject):
             self._queued = None
             if not self.start_test_all(plan, scheduled):
                 self.activityChanged.emit()
+        if report is not None:
+            self._consider_switching(report)
         if self._check_again:
             self._check_again = False
             QTimer.singleShot(0, self.check_now)
@@ -549,18 +561,27 @@ class AppController(QObject):
         router = self._settings.router(router_id)
         if router is None or self._stopped or self._runner is None or self.is_busy:
             return False
+        self._start_switch(router, None)
+        return True
+
+    def _start_switch(self, router: Router, decision: Decision | None) -> None:
         switcher, runner, stop = self._services.switcher, self._runner, self._stop
         wifi, netinfo = self._services.wifi, self._services.netinfo
         routers, scan = self._settings.routers, self._recent_scan()
+        names = {r.id: r.name for r in routers}
+        reason = auto_switch_reason(decision, names) if decision else None
+        snap = self.last_snapshot
+        current = snap.report.match.router if snap else None
 
         def work() -> SwitchResult:
             plan = gather_plan(routers, wifi, netinfo, switcher, scan, stop)
-            return runner.switch(plan, router, stop=stop)
+            return runner.switch(plan, router, stop=stop, reason=reason)
 
-        log.info("switching to %s", router.name)
-        self._begin(_Run("switch", name=router.name))
+        log.info("switching to %s%s", router.name, f" automatically: {reason}" if reason else "")
+        run = _Run("switch", name=router.name, decision=decision)
+        run.from_id = current.id if current else None
+        self._begin(run)
         self.run_task(work, self._on_run_done, self._on_run_failed)
-        return True
 
     def _recover(self) -> None:
         runner, stop = self._runner, self._stop
@@ -638,12 +659,69 @@ class AppController(QObject):
             log.info("Test all done: %s. %s", message.title, message.text)
             self.testAllFinished.emit(message, run.scheduled)
             return
-        if isinstance(run.outcome, SwitchResult):
-            message = switch_summary(run.outcome)
-        else:
+        result = run.outcome if isinstance(run.outcome, SwitchResult) else None
+        decision, now = run.decision, self.now()
+        if result is not None and result.ok:
+            automatic = decision is not None and decision.action is Action.SWITCH
+            self._policy.switched(run.from_id, result.router.id, now, automatic)
+        elif result is not None and (result.restored is not None or decision is not None):
+            self._policy.switch_failed(result.router.id, now)
+        if result is None:
             message = Message(StatusLevel.BAD, f"Couldn't switch to {run.name}", f"{run.error}.")
+        elif decision is not None and result.ok:
+            message = auto_switch_message(decision, {r.id: r.name for r in self._settings.routers})
+        else:
+            message = switch_summary(result)
         log.info("switch done: %s. %s", message.title, message.text)
-        self.switchFinished.emit(message)
+        if decision is not None:
+            self.autoSwitched.emit(message)
+        else:
+            self.switchFinished.emit(message)
+
+    # --- automatic switching -----------------------------------------------------------
+
+    @property
+    def auto_switch_text(self) -> str | None:
+        """The dashboard's line about automatic switching, when it's on."""
+        if not self._settings.auto_switch or self._runner is None:
+            return None
+        names = {r.id: r.name for r in self._settings.routers}
+        return auto_switch_progress(self._policy.progress(self.now()), names)
+
+    def _loaded_last_switch(self, event: Event | None) -> None:
+        if event is not None:
+            self._policy.restore_last_switch(event.timestamp)
+
+    def _consider_switching(self, report: CycleReport) -> None:
+        """Let the policy see this check; switch if it says so and switching is on."""
+        snap = self.last_snapshot
+        switchable = snap.switchable if snap is not None else frozenset()
+        current = report.match.router if report.record is not None else None
+        candidates = {
+            s.router.id: s.score
+            for s in report.statuses
+            if s.score is not None
+            and s.router.id in switchable
+            and (current is None or s.router.id != current.id)
+        }
+        decision = self._policy.observe(
+            CheckView(
+                report.timestamp,
+                current.id if current else None,
+                report.record.verdict if report.record else None,
+                report.recommendation,
+                candidates,
+            )
+        )
+        if decision.action is Action.STAY:
+            return
+        router = self._settings.router(decision.router_id or "")
+        if not self._settings.auto_switch or router is None:
+            return
+        if self._stopped or self._runner is None or self.is_busy:
+            log.info("automatic switch to %s skipped: busy", router.name)
+            return
+        self._start_switch(router, decision)
 
     # --- scheduled Test all ------------------------------------------------------------
 
