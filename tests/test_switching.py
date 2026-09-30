@@ -33,6 +33,7 @@ from router_checker.core.switching import (
     SkipReason,
     Stage,
     SwitchRunner,
+    SwitchTiming,
     TestAllPlan,
     gather_plan,
     plan_test_all,
@@ -78,7 +79,9 @@ def runner_for(parts, routers, tmp_path, **options):
         clock=parts["clock"],
         notifier=parts["notifier"],
     )
-    timing = {"connect_timeout_s": 0.05, "settle_s": 0.0, "poll_s": 0.001} | options
+    timing = SwitchTiming(
+        **({"connect_timeout_s": 0.05, "settle_s": 0.0, "poll_s": 0.001} | options)
+    )
     marker = MarkerFile(tmp_path / "test-all-restore.json")
     runner = SwitchRunner(
         engine,
@@ -88,7 +91,7 @@ def runner_for(parts, routers, tmp_path, **options):
         parts["store"],
         parts["clock"],
         marker,
-        **timing,
+        timing,
     )
     return runner, engine, marker
 

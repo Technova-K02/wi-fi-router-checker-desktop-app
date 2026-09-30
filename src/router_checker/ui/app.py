@@ -131,6 +131,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         log.warning("could not read the Windows accent color", exc_info=True)
 
     from router_checker.platform_windows.icmp import WindowsPingService
+    from router_checker.platform_windows.idle import WindowsIdleMonitor
     from router_checker.platform_windows.netinfo import WindowsNetworkInfoService
     from router_checker.platform_windows.netwatch import RouteChangeWatcher
     from router_checker.platform_windows.wlan import WindowsWifiService
@@ -150,6 +151,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         netinfo=WindowsNetworkInfoService(),
         clock=win.SystemClock(),
         watcher=RouteChangeWatcher(),
+        switcher=wifi,
+        idle=WindowsIdleMonitor(),
     )
     controller = AppController(settings, settings_path, store, services)
     window = MainWindow(controller)

@@ -249,6 +249,13 @@ class SwitchResult:
     origin: WifiConnection | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class SwitchTiming:
+    connect_timeout_s: float = CONNECT_TIMEOUT_S
+    settle_s: float = SETTLE_S
+    poll_s: float = POLL_S
+
+
 def usable_address(ip: str | None) -> bool:
     """A real address, not the 169.254.x.x Windows picks when DHCP fails."""
     if not ip:
@@ -272,10 +279,7 @@ class SwitchRunner:
         store: HistoryStore,
         clock: Clock,
         marker: MarkerFile | None = None,
-        *,
-        connect_timeout_s: float = CONNECT_TIMEOUT_S,
-        settle_s: float = SETTLE_S,
-        poll_s: float = POLL_S,
+        timing: SwitchTiming = SwitchTiming(),  # noqa: B008 (frozen, so sharing it is fine)
     ) -> None:
         self._engine = engine
         self._switcher = switcher
@@ -284,9 +288,7 @@ class SwitchRunner:
         self._store = store
         self._clock = clock
         self._marker = marker
-        self._connect_timeout_s = connect_timeout_s
-        self._settle_s = settle_s
-        self._poll_s = poll_s
+        self._timing = timing
 
     # --- Test all ---------------------------------------------------------------------
 
@@ -417,15 +419,16 @@ class SwitchRunner:
     ) -> tuple[WifiConnection, GatewayInfo] | None:
         """Wait until connected to ``ssid`` with an address and a gateway, then settle.
         None after the timeout or once ``stop`` is set."""
-        deadline = time.monotonic() + self._connect_timeout_s
+        timing = self._timing
+        deadline = time.monotonic() + timing.connect_timeout_s
         while True:
             if self.joined(ssid) is not None:
-                if stop.wait(self._settle_s):
+                if stop.wait(timing.settle_s):
                     return None
                 joined = self.joined(ssid)  # read again: the address may just have changed
                 if joined is not None:
                     return joined
-            if time.monotonic() >= deadline or stop.wait(self._poll_s):
+            if time.monotonic() >= deadline or stop.wait(timing.poll_s):
                 return None
 
     def _restore(

@@ -11,18 +11,23 @@ import pytest
 
 from fakes import (
     GW,
+    T0,
     ZTE_BSSID,
     ZTE_LAN,
+    FakeIdle,
     FakeWatcher,
     gateway_info,
     network_parts,
     sample_routers,
 )
-from router_checker.core.models import AlertKind, Router
+from router_checker.core.models import AlertKind, Event, Router
 from router_checker.core.presentation import StatusLevel
 from router_checker.core.quiet_hours import QuietHours, parse_hhmm
 from router_checker.core.settings import Settings, load_settings
-from router_checker.ui.controller import AppController, Services
+from router_checker.core.switching import MarkerFile, RestoreMarker, SwitchTiming
+from router_checker.ui.controller import MARKER_FILE, AppController, Services
+
+FAST = SwitchTiming(connect_timeout_s=1.0, settle_s=0.0, poll_s=0.01)
 
 TIMEOUT = 5000
 
@@ -41,11 +46,14 @@ def make(tmp_path):
             netinfo=parts["netinfo"],
             clock=parts["clock"],
             watcher=FakeWatcher(),
+            switcher=parts["switcher"],
+            idle=parts.get("idle", FakeIdle()),
         )
         settings = settings or Settings(pings_per_target=4, routers=sample_routers())
         controller = AppController(
-            settings, tmp_path / "settings.json", parts["store"], services, tz=UTC
-        )
+            settings, tmp_path / "settings.json", parts["store"], services, tz=UTC,
+            switch_timing=FAST,
+        )  # fmt: skip
         made.append(controller)
         return controller, services, parts
 
@@ -291,3 +299,182 @@ def test_export_errors_are_reported(qtbot, make, tmp_path) -> None:
     controller.export_checks(tmp_path / "missing" / "out.csv", results.append, results.append)
     qtbot.waitUntil(lambda: bool(results), timeout=TIMEOUT)
     assert isinstance(results[0], OSError)
+
+
+# --- Test all and switching ---------------------------------------------------------------
+
+
+def plan_now(qtbot, controller):
+    plans = []
+    controller.plan_test_all(plans.append)
+    qtbot.waitUntil(lambda: bool(plans), timeout=TIMEOUT)
+    return plans[0]
+
+
+def gated_parts():
+    """The fake network with every ping held until the gate opens (or the ping is stopped)."""
+    parts = network_parts()
+    parts["ping"] = GatedPing(parts["ping"])
+    return parts
+
+
+def test_test_all_runs_and_ends_with_a_check(qtbot, make) -> None:
+    controller, _, parts = make()
+    with qtbot.waitSignal(controller.checkFinished, timeout=TIMEOUT):
+        controller.check_now()
+    assert controller.last_snapshot.switchable == {"nb"}
+    plan = plan_now(qtbot, controller)
+    assert [c.router.id for c in plan.to_test] == ["nb"]
+    seen = []
+    controller.activityChanged.connect(lambda: seen.append(controller.activity))
+    with qtbot.waitSignal(controller.testAllFinished, timeout=TIMEOUT) as finished:
+        assert controller.start_test_all(plan)
+        assert controller.is_busy and controller.is_testing_all
+        assert controller.next_check_at is None  # the timer pauses
+        assert not controller.can_switch_to("nb")
+    message, scheduled = finished.args
+    assert (message.title, scheduled) == ("Test all finished", False)
+    assert message.text.startswith("Tested Neighbor and ZTE. Best: ")
+    assert parts["switcher"].calls == ["connect Neighbor", "connect ZTE-Home"]
+    assert "Connecting to Neighbor (1 of 1)…" in seen
+    assert "Checking the network you're on…" in seen and seen[-1] is None
+    assert not controller.is_busy and controller.next_check_at is not None
+    report = controller.last_snapshot.report
+    assert report.match.router.id == "zte"
+    nb = next(st for st in report.statuses if st.router.id == "nb")
+    assert not nb.score.estimated  # measured during Test all
+    macs = {str(m) for m in controller.settings.router("nb").macs}
+    assert macs == {"22-22-22-22-22-20", "22-22-22-22-22-22"}  # learned on the way, saved
+
+
+def test_checks_pause_while_test_all_runs(qtbot, make) -> None:
+    parts = gated_parts()
+    controller, services, _ = make(**parts)
+    assert controller.start_test_all(plan_now(qtbot, controller))
+    qtbot.waitUntil(lambda: controller.activity == "Testing Neighbor (1 of 1)…", timeout=TIMEOUT)
+    qtbot.waitUntil(lambda: bool(parts["ping"].threads), timeout=TIMEOUT)
+    with qtbot.assertNotEmitted(controller.checkStarted, wait=300):
+        controller.check_now()
+        services.watcher.changed = True
+    with qtbot.waitSignal(controller.testAllFinished, timeout=TIMEOUT):
+        parts["ping"].gate.set()
+
+
+def test_cancel_goes_back_and_keeps_nothing_half_done(qtbot, make) -> None:
+    parts = gated_parts()
+    controller, _, _ = make(**parts)
+    assert controller.start_test_all(plan_now(qtbot, controller))
+    qtbot.waitUntil(lambda: bool(parts["ping"].threads), timeout=TIMEOUT)
+    assert controller.run_state.can_cancel
+    controller.cancel_test_all()
+    assert controller.activity == "Cancelling…" and not controller.run_state.can_cancel
+    qtbot.waitUntil(
+        lambda: controller.activity == "Checking the network you're on…", timeout=TIMEOUT
+    )
+    with qtbot.waitSignal(controller.testAllFinished, timeout=TIMEOUT) as finished:
+        parts["ping"].gate.set()  # lets the closing check run
+    assert finished.args[0].title == "Test all cancelled"
+    assert parts["switcher"].calls == ["connect Neighbor", "connect ZTE-Home"]
+    assert parts["store"].recent_checks(10, "nb") == []
+
+
+def test_exit_during_test_all_asks_windows_to_go_back(qtbot, make, tmp_path) -> None:
+    parts = gated_parts()  # never released
+    controller, _, _ = make(**parts)
+    assert controller.start_test_all(plan_now(qtbot, controller))
+    qtbot.waitUntil(lambda: bool(parts["ping"].threads), timeout=TIMEOUT)
+    started = time.monotonic()
+    controller.shutdown()
+    assert time.monotonic() - started < 1.0
+    assert parts["switcher"].calls == ["connect Neighbor", "connect ZTE-Home"]
+    assert MarkerFile(tmp_path / MARKER_FILE).load().ssid == "ZTE-Home"  # for the next start
+
+
+def test_test_all_waits_for_a_running_check(qtbot, make) -> None:
+    parts = gated_parts()
+    controller, _, _ = make(**parts)
+    plan = plan_now(qtbot, controller)
+    controller.check_now()
+    assert controller.start_test_all(plan)
+    assert controller.activity == "Test all starts after this check…"
+    assert not controller.start_test_all(plan)  # one at a time
+    with qtbot.waitSignal(controller.testAllFinished, timeout=TIMEOUT):
+        parts["ping"].gate.set()
+    assert parts["switcher"].calls == ["connect Neighbor", "connect ZTE-Home"]
+
+
+def test_switch_to_connects_and_checks_the_new_router(qtbot, make) -> None:
+    controller, _, parts = make()
+    with qtbot.waitSignal(controller.checkFinished, timeout=TIMEOUT):
+        controller.check_now()
+    assert controller.can_switch_to("nb") and not controller.can_switch_to("gone")
+    with qtbot.waitSignal(controller.switchFinished, timeout=TIMEOUT) as finished:
+        assert controller.switch_to("nb")
+        assert controller.activity == "Switching to Neighbor…"
+    assert finished.args[0].title == "Switched to Neighbor"
+    report = controller.last_snapshot.report
+    assert report.connection.ssid == "Neighbor" and report.match.router.id == "nb"
+
+    # The ZTE has no Wi-Fi name, but the first check learned its Wi-Fi MAC: that's enough.
+    with qtbot.waitSignal(controller.switchFinished, timeout=TIMEOUT) as finished:
+        assert controller.switch_to("zte")
+    assert finished.args[0].title == "Switched to ZTE"
+    with qtbot.waitSignal(controller.switchFinished, timeout=TIMEOUT) as finished:
+        assert controller.switch_to("gone")
+    assert (finished.args[0].title, finished.args[0].text) == (
+        "Can't switch to Gone",
+        "Not in range right now.",
+    )
+    assert parts["switcher"].calls == ["connect Neighbor", "connect ZTE-Home"]
+
+
+def test_scheduled_test_all_waits_until_you_are_away(qtbot, make) -> None:
+    parts = network_parts()
+    parts["idle"] = idle = FakeIdle(60)
+    settings = Settings(pings_per_target=4, routers=sample_routers(), scheduled_test_all=True)
+    controller, _, _ = make(settings, **parts)
+    controller.maybe_run_scheduled_test_all()
+    qtbot.wait(100)
+    assert not controller.is_busy and parts["switcher"].calls == []
+
+    idle.seconds = 600
+    with qtbot.waitSignal(controller.testAllFinished, timeout=TIMEOUT) as finished:
+        controller.maybe_run_scheduled_test_all()
+    assert finished.args[1] is True  # scheduled
+    assert parts["store"].last_event("test_all").message.startswith("Scheduled test all: ")
+    controller.maybe_run_scheduled_test_all()  # not due again for 2 hours
+    qtbot.wait(100)
+    assert not controller.is_busy
+    parts["clock"].advance(120)
+    with qtbot.waitSignal(controller.testAllFinished, timeout=TIMEOUT):
+        controller.maybe_run_scheduled_test_all()
+
+
+def test_the_last_scheduled_run_is_read_from_history(qtbot, make) -> None:
+    parts = network_parts()
+    parts["idle"] = FakeIdle(600)
+    parts["store"].add_event(Event(T0 - timedelta(minutes=30), None, "test_all", "Test all: ..."))
+    settings = Settings(pings_per_target=4, routers=sample_routers(), scheduled_test_all=True)
+    controller, _, _ = make(settings, **parts)
+    with qtbot.waitSignal(controller.checkFinished, timeout=TIMEOUT):
+        controller.start()
+    qtbot.wait(100)  # the last run's time is read in the background too
+    controller.maybe_run_scheduled_test_all()
+    qtbot.wait(100)
+    assert parts["switcher"].calls == []  # it ran 30 minutes ago; the interval is 2 hours
+
+
+def test_start_goes_back_after_an_interrupted_test_all(qtbot, make, tmp_path) -> None:
+    parts = network_parts()
+    parts["switcher"].connect("Neighbor")  # the app crashed while on the Neighbor
+    marker = RestoreMarker(T0, "ZTE-Home", "ZTE-Home", ("Neighbor",))
+    MarkerFile(tmp_path / MARKER_FILE).save(marker)
+    controller, _, _ = make(**parts)
+    with qtbot.waitSignal(controller.checkFinished, timeout=TIMEOUT) as finished:
+        controller.start()
+        assert controller.activity.startswith("Going back to your network")
+    assert finished.args[0].report.match.router.id == "zte"
+    assert parts["switcher"].calls == ["connect Neighbor", "connect ZTE-Home"]
+    assert not (tmp_path / MARKER_FILE).exists()
+    messages = [e.message for e in parts["store"].events(None, 5)]
+    assert "Went back to “ZTE-Home” after an interrupted Test all" in messages
