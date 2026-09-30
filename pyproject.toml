@@ -1,16 +1,22 @@
 [project]
 name = "router-checker"
-version = "0.1.0"
+version = "0.2.0"
 description = "Windows 11 app that monitors several Wi-Fi routers and warns when the current one becomes unstable."
 readme = "README.md"
 authors = [
     { name = "talent", email = "talent@email.com" }
 ]
 requires-python = ">=3.13"
-dependencies = []
+dependencies = [
+    "pyside6>=6.11",
+    "pyside6-fluent-widgets>=1.11.3",
+]
 
 [project.scripts]
 router-checker = "router_checker.cli:main"
+
+[project.gui-scripts]
+router-checker-app = "router_checker.ui.app:main"
 
 [build-system]
 requires = ["uv_build>=0.12.21,<0.13.0"]
@@ -19,12 +25,14 @@ build-backend = "uv_build"
 [dependency-groups]
 dev = [
     "pytest>=9.1.1",
+    "pytest-qt>=4.5",
     "ruff>=0.16.9",
 ]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+qt_api = "pyside6"
 
 [tool.ruff]
 line-length = 100
@@ -33,3 +41,5 @@ src = ["src", "tests"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "B", "UP", "SIM", "RUF"]
+# Typographic characters used on purpose in UI text.
+allowed-confusables = ["–", "’", "“", "”"]
