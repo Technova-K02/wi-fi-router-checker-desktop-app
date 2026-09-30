@@ -1,11 +1,13 @@
-"""Switching Wi-Fi networks: "Test all now", the Switch button, and going back after
-an interrupted Test all.
+"""Switching routers: "Test all now", the Switch button, and going back after an
+interrupted Test all.
 
 The PC has one Wi-Fi adapter, so testing another router means connecting to it for
 a moment. Only profiles Windows already saved are used: the password stays in
-Windows and is never read. Test all always restores the original connection, also
-after an error, Cancel or Exit. While it is switched away, a small marker file
-names the original network, so the next start can go back if the app couldn't.
+Windows and is never read. Behind a middle router, the middle router is asked to
+switch instead (``core.middle_switching``); both share the flow in ``RunnerBase``.
+Test all always restores the original connection, also after an error, Cancel or
+Exit. While it is switched away, a small marker file names where to go back, so
+the next start can go back if the app couldn't.
 """
 
 from __future__ import annotations
@@ -28,6 +30,7 @@ from router_checker.core.errors import (
     LocationPermissionError,
     WifiUnavailableError,
 )
+from router_checker.core.mac import MacAddress
 from router_checker.core.matching import identify_current
 from router_checker.core.models import (
     CheckRecord,
@@ -85,6 +88,7 @@ class SkipReason(StrEnum):
     SAME_NAME = "same Wi-Fi name"
     NO_PROFILE = "not saved in Windows"
     NOT_IN_RANGE = "not in range"
+    NO_WIFI_MAC = "no Wi-Fi MAC"
 
 
 SKIP_TEXTS = {
@@ -92,6 +96,7 @@ SKIP_TEXTS = {
     SkipReason.SAME_NAME: "Same Wi-Fi name as another network.",
     SkipReason.NO_PROFILE: "Windows hasn't saved it. Connect to it once from the taskbar.",
     SkipReason.NOT_IN_RANGE: "Not in range right now.",
+    SkipReason.NO_WIFI_MAC: "No Wi-Fi MAC to ask the middle router for. Add it with Edit.",
 }
 
 
@@ -100,8 +105,22 @@ class Candidate:
     """A router Test all (or the Switch button) can connect to."""
 
     router: Router
-    ssid: str
+    ssid: str  # Wi-Fi: the network name; "" behind the middle router
     profile_name: str
+    bssids: tuple[MacAddress, ...] = ()  # behind the middle router: the Wi-Fi MACs to try
+
+
+@dataclass(frozen=True, slots=True)
+class MiddleOrigin:
+    """Where Test all goes back to behind the middle router."""
+
+    router: Router
+    address: str  # its address, which the second hop shows
+    bssids: tuple[MacAddress, ...]  # the Wi-Fi MACs to ask the middle router for, best first
+
+    @property
+    def ssid(self) -> str:  # so messages can name it like a Wi-Fi network
+        return self.router.name
 
 
 @dataclass(frozen=True, slots=True)
@@ -114,7 +133,7 @@ class Skipped:
 class TestAllPlan:
     __test__ = False  # not a pytest test class
 
-    origin: WifiConnection | None  # where to go back to; None: Wi-Fi wasn't connected
+    origin: WifiConnection | MiddleOrigin | None  # where to go back to; None: Wi-Fi was off
     current: Router | None  # the router you're on: tested in place, without switching
     to_test: tuple[Candidate, ...] = ()
     skipped: tuple[Skipped, ...] = ()
@@ -127,6 +146,10 @@ class TestAllPlan:
     @property
     def estimated_seconds(self) -> int:
         return SECONDS_PER_ROUTER * len(self.to_test) + SECONDS_TO_FINISH
+
+    @property
+    def via_middle(self) -> bool:
+        return isinstance(self.origin, MiddleOrigin)
 
 
 def wifi_name(router: Router, scan: Sequence[ScanEntry]) -> str | None:
@@ -250,7 +273,8 @@ class SwitchResult:
     ok: bool
     problem: str | None = None  # why it didn't switch
     restored: bool | None = None  # after a failed attempt: back on the original network?
-    origin: WifiConnection | None = None
+    origin: WifiConnection | MiddleOrigin | None = None
+    linked: Router | None = None  # the router with what the switch taught (middle router)
 
 
 @dataclass(frozen=True, slots=True)
@@ -271,27 +295,17 @@ def usable_address(ip: str | None) -> bool:
     return not (address.is_link_local or address.is_unspecified)
 
 
-class SwitchRunner:
-    """Test all and single switches, with waiting and restoring done carefully."""
+class RunnerBase:
+    """Test all and single switches: the flow both ways of switching share. Subclasses
+    say how to go to a router (``_test_one``, ``_go``), how to go back
+    (``_restore``) and how to mark where to go back to (``_mark``, ``_unmark``)."""
 
     def __init__(
-        self,
-        engine: CheckEngine,
-        switcher: RouterSwitcher,
-        wifi: WifiService,
-        netinfo: NetworkInfoService,
-        store: HistoryStore,
-        clock: Clock,
-        marker: MarkerFile | None = None,
-        timing: SwitchTiming = SwitchTiming(),  # noqa: B008 (frozen, so sharing it is fine)
+        self, engine: CheckEngine, store: HistoryStore, clock: Clock, timing: SwitchTiming
     ) -> None:
         self._engine = engine
-        self._switcher = switcher
-        self._wifi = wifi
-        self._netinfo = netinfo
         self._store = store
         self._clock = clock
-        self._marker = marker
         self._timing = timing
 
     # --- Test all ---------------------------------------------------------------------
@@ -317,8 +331,7 @@ class SwitchRunner:
         total = len(plan.to_test)
         outcomes: list[Outcome] = []
         linked: dict[str, Router] = {}
-        if self._marker is not None:
-            self._marker.save(RestoreMarker.for_plan(plan, self._clock.now()))
+        self._mark(plan)
         try:
             for step, candidate in enumerate(plan.to_test, start=1):
                 if cancel.is_set():
@@ -331,9 +344,9 @@ class SwitchRunner:
                 if link is not None:
                     linked[link.id] = link
         finally:
-            restored = self._restore(plan.origin, total, exiting, progress)
-            if self._marker is not None and (restored or not exiting.is_set()):
-                self._marker.clear()
+            restored = self._restore(plan, total, exiting, progress)
+            if restored or not exiting.is_set():
+                self._unmark()
         result = TestAllResult(
             plan,
             tuple(outcomes),
@@ -344,31 +357,6 @@ class SwitchRunner:
         )
         self._log(result, scheduled)
         return result
-
-    def _test_one(
-        self,
-        candidate: Candidate,
-        step: int,
-        total: int,
-        cancel: threading.Event,
-        progress: Callable[[Progress], None],
-    ) -> tuple[Outcome, Router | None] | None:
-        """Test one router; None when cancelled meanwhile."""
-        router = candidate.router
-        progress(Progress(Stage.CONNECTING, router.name, step, total))
-        try:
-            self._switcher.connect(candidate.profile_name)
-            joined = self.wait_for(candidate.ssid, cancel)
-        except _WINDOWS_ERRORS as exc:
-            return Outcome(router, None, f"Windows couldn't connect: {exc}"), None
-        if joined is None:
-            return None if cancel.is_set() else (Outcome(router, None, NO_CONNECTION), None)
-        progress(Progress(Stage.TESTING, router.name, step, total))
-        try:
-            record, link = self._engine.test_other(router, *joined, stop=cancel)
-        except CheckCancelled:
-            return None
-        return Outcome(router, record), link
 
     def _log(self, result: TestAllResult, scheduled: bool) -> None:
         now = self._clock.now()
@@ -398,24 +386,111 @@ class SwitchRunner:
         candidate = next((c for c in plan.to_test if c.router.id == router.id), None)
         if candidate is None:
             return SwitchResult(router, False, switch_blocker(plan, router), origin=plan.origin)
-        problem = NO_CONNECTION
-        try:
-            self._switcher.connect(candidate.profile_name)
-            joined = self.wait_for(candidate.ssid, stop)
-        except _WINDOWS_ERRORS as exc:
-            joined, problem = None, f"Windows couldn't connect: {exc}"
+        ok, problem, linked = self._go(candidate, stop)
         now = self._clock.now()
-        if joined is not None:
+        if ok:
             text = f"Switched to {router.name}"
             if reason:
                 text = f"Switched automatically to {router.name}: {reason}"
             self._store.add_event(Event(now, router.id, SWITCH_EVENT, text))
-            return SwitchResult(router, True, origin=plan.origin)
-        restored = self._restore(plan.origin, 0, stop, lambda _p: None)
+            return SwitchResult(router, True, origin=plan.origin, linked=linked)
+        restored = self._restore(plan, 0, stop, lambda _p: None)
         self._store.add_event(
             Event(now, router.id, SWITCH_EVENT, f"Couldn't switch to {router.name}: {problem}")
         )
         return SwitchResult(router, False, problem, restored, plan.origin)
+
+    # --- what subclasses provide ----------------------------------------------------------
+
+    def _mark(self, plan: TestAllPlan) -> None: ...
+
+    def _unmark(self) -> None: ...
+
+    def _test_one(
+        self,
+        candidate: Candidate,
+        step: int,
+        total: int,
+        cancel: threading.Event,
+        progress: Callable[[Progress], None],
+    ) -> tuple[Outcome, Router | None] | None:
+        """Go to one router and test it; None when cancelled meanwhile."""
+        raise NotImplementedError
+
+    def _go(self, candidate: Candidate, stop: threading.Event) -> tuple[bool, str, Router | None]:
+        """Go to the router for good: (arrived, why not, what it taught)."""
+        raise NotImplementedError
+
+    def _restore(
+        self,
+        plan: TestAllPlan,
+        total: int,
+        exiting: threading.Event,
+        progress: Callable[[Progress], None],
+    ) -> bool:
+        """Back to where the plan started. Never raises."""
+        raise NotImplementedError
+
+
+class SwitchRunner(RunnerBase):
+    """Switching the PC's Wi-Fi, with waiting and restoring done carefully."""
+
+    def __init__(
+        self,
+        engine: CheckEngine,
+        switcher: RouterSwitcher,
+        wifi: WifiService,
+        netinfo: NetworkInfoService,
+        store: HistoryStore,
+        clock: Clock,
+        marker: MarkerFile | None = None,
+        timing: SwitchTiming = SwitchTiming(),  # noqa: B008 (frozen, so sharing it is fine)
+    ) -> None:
+        super().__init__(engine, store, clock, timing)
+        self._switcher = switcher
+        self._wifi = wifi
+        self._netinfo = netinfo
+        self._marker = marker
+
+    def _mark(self, plan: TestAllPlan) -> None:
+        if self._marker is not None:
+            self._marker.save(RestoreMarker.for_plan(plan, self._clock.now()))
+
+    def _unmark(self) -> None:
+        if self._marker is not None:
+            self._marker.clear()
+
+    def _test_one(
+        self,
+        candidate: Candidate,
+        step: int,
+        total: int,
+        cancel: threading.Event,
+        progress: Callable[[Progress], None],
+    ) -> tuple[Outcome, Router | None] | None:
+        router = candidate.router
+        progress(Progress(Stage.CONNECTING, router.name, step, total))
+        try:
+            self._switcher.connect(candidate.profile_name)
+            joined = self.wait_for(candidate.ssid, cancel)
+        except _WINDOWS_ERRORS as exc:
+            return Outcome(router, None, f"Windows couldn't connect: {exc}"), None
+        if joined is None:
+            return None if cancel.is_set() else (Outcome(router, None, NO_CONNECTION), None)
+        progress(Progress(Stage.TESTING, router.name, step, total))
+        try:
+            record, link = self._engine.test_other(router, *joined, stop=cancel)
+        except CheckCancelled:
+            return None
+        return Outcome(router, record), link
+
+    def _go(self, candidate: Candidate, stop: threading.Event) -> tuple[bool, str, Router | None]:
+        try:
+            self._switcher.connect(candidate.profile_name)
+            joined = self.wait_for(candidate.ssid, stop)
+        except _WINDOWS_ERRORS as exc:
+            return False, f"Windows couldn't connect: {exc}", None
+        return joined is not None, NO_CONNECTION, None
 
     # --- waiting and restoring -----------------------------------------------------------
 
@@ -448,12 +523,14 @@ class SwitchRunner:
 
     def _restore(
         self,
-        origin: WifiConnection | None,
+        plan: TestAllPlan,
         total: int,
         exiting: threading.Event,
         progress: Callable[[Progress], None],
     ) -> bool:
-        """Back to ``origin`` (or off Wi-Fi if it's None). Never raises."""
+        """Back to the plan's origin (or off Wi-Fi if it's None). Never raises."""
+        origin = plan.origin
+        assert not isinstance(origin, MiddleOrigin)
         try:
             if origin is None:
                 if self._wifi.current_connection() is not None:
@@ -528,7 +605,15 @@ def run_event_text(result: TestAllResult, scheduled: bool) -> str:
     if result.cancelled:
         parts[-1] += "; cancelled"
     origin = result.plan.origin
-    if origin is None:
+    if isinstance(origin, MiddleOrigin):
+        name = origin.router.name
+        if result.restored:
+            parts[-1] += f"; the middle router is back on {name}"
+        elif result.exited:
+            parts[-1] += f"; Router Checker exited, so it only asked the middle router for {name}"
+        else:
+            parts[-1] += f"; couldn't switch the middle router back to {name}"
+    elif origin is None:
         parts[-1] += "; Wi-Fi disconnected again" if result.restored else "; couldn't disconnect"
     elif result.restored:
         parts[-1] += f"; back on “{origin.ssid}”"

@@ -362,19 +362,52 @@ ZTE_ADDRESS = GW  # the ZTE, seen from behind the middle router
 NB_ADDRESS = NB_GW
 
 
+@dataclass
+class FakeMiddle:
+    """The middle router: asked for a Wi-Fi MAC in ``joins``, it moves the second hop to
+    that router's address. A MAC in ``rejects`` gets an error answer; one it doesn't
+    know is accepted but changes nothing (it can't find that network)."""
+
+    ping: FakePing
+    joins: dict[str, str] = field(default_factory=dict)  # Wi-Fi MAC -> address
+    rejects: set[str] = field(default_factory=set)
+    down: bool = False
+    calls: list[str] = field(default_factory=list)
+    on_change: object = None  # called with the MAC before switching
+
+    def change_router(self, endpoint: object, bssid: MacAddress) -> None:
+        text = str(bssid)
+        self.calls.append(text)
+        if self.down:
+            raise OSError("connection refused")
+        if text in self.rejects:
+            raise OSError("HTTP 400")
+        if callable(self.on_change):
+            self.on_change(text)
+        if text in self.joins:
+            self.ping.upstream = self.joins[text]
+
+    def reachable(self, endpoint: object) -> str | None:
+        return "connection refused" if self.down else None
+
+
 def middle_parts(upstream: str | None = ZTE_ADDRESS) -> dict[str, object]:
-    """The PC on a cable into the middle router, which is on the ZTE."""
+    """The PC on a cable into the middle router, which is on the ZTE; it can join the
+    ZTE and the Neighbor."""
     parts = network_parts()
     parts["netinfo"].cable = cable_gateway(MIDDLE, MIDDLE_LAN)
     parts["ping"].replies[MIDDLE] = [1.0]
     parts["ping"].upstream = upstream
+    parts["middle"] = FakeMiddle(
+        parts["ping"], joins={ZTE_BSSID: ZTE_ADDRESS, NB_BSSID: NB_ADDRESS}
+    )
     return parts
 
 
 def middle_routers() -> tuple[Router, Router, Router]:
     zte, neighbor, gone = sample_routers()
     return (
-        replace(zte, address=ZTE_ADDRESS),
+        replace(zte, address=ZTE_ADDRESS, macs=(mac(ZTE_BSSID), mac(ZTE_LAN))),  # learned on Wi-Fi
         replace(neighbor, address=NB_ADDRESS, macs=(mac(NB_BSSID),)),
         gone,
     )

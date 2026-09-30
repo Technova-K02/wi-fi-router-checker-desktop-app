@@ -9,6 +9,8 @@ from datetime import datetime
 from typing import Protocol
 
 from router_checker.core.auto_switch import CheckView, Decision
+from router_checker.core.mac import MacAddress
+from router_checker.core.middle import Endpoint
 from router_checker.core.models import (
     Alert,
     CheckRecord,
@@ -151,6 +153,19 @@ class RouterSwitcher(Protocol):
 
     def disconnect(self) -> None:
         """Disconnect the Wi-Fi adapter."""
+        ...
+
+
+class MiddleRouterClient(Protocol):
+    """Your middle router's switch URL (``core.middle``)."""
+
+    def change_router(self, endpoint: Endpoint, bssid: MacAddress) -> None:
+        """Ask the middle router to join the router with this Wi-Fi MAC. Raises OSError
+        if it can't be reached or doesn't accept (no 2xx answer)."""
+        ...
+
+    def reachable(self, endpoint: Endpoint) -> str | None:
+        """None if the middle router answers at all (any HTTP status), else why not."""
         ...
 
 

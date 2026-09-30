@@ -262,14 +262,16 @@ class CheckEngine:
         the record and the router with what was learned, if anything is new."""
         now = self._clock.now()
         test = self.full_test(gateway, router, None, None, now, stop, router_ip=upstream_ip)
-        learned = self._learn_behind(router, upstream_ip, bssid, now)
+        learned = self.learn_behind(router, upstream_ip, bssid, now)
         record = self._save_test(test)
         self._store.add_hourly(router.id, now, None, record.score)
         return record, learned
 
-    def _learn_behind(
+    def learn_behind(
         self, router: Router, address: str, bssid: MacAddress | None, now: datetime
     ) -> Router | None:
+        """Remember the router's address behind the middle router and the Wi-Fi MAC
+        that got it there; the router with them if anything is new."""
         current = self._settings.router(router.id) or router
         learned = replace(current, address=address, middle_bssid=bssid or current.middle_bssid)
         if learned == current:
