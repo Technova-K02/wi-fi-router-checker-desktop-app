@@ -35,6 +35,7 @@ from qfluentwidgets import FluentIcon as FIF
 
 from router_checker import __version__
 from router_checker.core.alerts import Thresholds
+from router_checker.core.middle import Endpoint, parse_endpoint
 from router_checker.core.models import LinkChoice
 from router_checker.core.presentation import quiet_hours_text
 from router_checker.core.quiet_hours import QuietHours
@@ -193,6 +194,15 @@ class SettingsPage(Page):
             self.connection.addItem(label, userData=choice.value)
         self.connection.setAccessibleName("Connection to check")
         self.connection.currentIndexChanged.connect(lambda _i: self._apply())
+        self.middle = LineEdit()
+        self.middle.setPlaceholderText("e.g. 192.168.8.1:8080")
+        self.middle.setClearButtonEnabled(True)
+        self.middle.setMinimumWidth(200)
+        self.middle.setAccessibleName("Middle router address and port")
+        self.middle.editingFinished.connect(self._set_middle)
+        self.middle_test = PushButton("Test")
+        self.middle_test.setAccessibleName("Test the middle router")
+        self.middle_test.clicked.connect(self._test_middle)
         self.network_change = SwitchButton()
         self.network_change.checkedChanged.connect(lambda _c: self._apply())
         self.startup = SwitchButton()
@@ -230,6 +240,16 @@ class SettingsPage(Page):
                 "Connection",
                 "Wi-Fi or Ethernet. Automatic checks the one Windows uses (past a VPN).",
                 self.connection,
+            )
+        )
+        monitoring.addSettingCard(
+            _card(
+                FIF.IOT,
+                "Middle router",
+                "Your own router between this PC and your routers, which can switch between "
+                "them. Leave empty if you have none.",
+                self.middle,
+                self.middle_test,
             )
         )
         monitoring.addSettingCard(
@@ -491,6 +511,54 @@ class SettingsPage(Page):
             position=InfoBarPosition.TOP, parent=self.window(),
         )  # fmt: skip
 
+    def _middle_endpoint(self) -> Endpoint | None:
+        """The typed middle router, or None (with the field marked) if it isn't one."""
+        endpoint = parse_endpoint(self.middle.text())
+        self.middle.setError(endpoint is None)
+        if endpoint is None:
+            InfoBar.error(
+                "Not a middle router address",
+                "Type its address and port, like 192.168.8.1:8080.",
+                duration=6000, position=InfoBarPosition.TOP, parent=self.window(),
+            )  # fmt: skip
+        return endpoint
+
+    def _set_middle(self) -> None:
+        text = self.middle.text().strip()
+        if text == self.controller.settings.middle_router:
+            return
+        if not text:
+            self.controller.update_settings(replace(self.controller.settings, middle_router=""))
+            return
+        endpoint = self._middle_endpoint()
+        if endpoint is not None:
+            new = replace(self.controller.settings, middle_router=str(endpoint))
+            self.controller.update_settings(new)
+
+    def _test_middle(self) -> None:
+        endpoint = self._middle_endpoint() if self.middle.text().strip() else None
+        if endpoint is None:
+            if not self.middle.text().strip():
+                self.middle.setFocus()
+            return
+        self.middle_test.setEnabled(False)
+        self.controller.test_middle_router(
+            endpoint, lambda problem: self._middle_tested(endpoint, problem)
+        )
+
+    def _middle_tested(self, endpoint: Endpoint, problem: str | None) -> None:
+        self.middle_test.setEnabled(True)
+        if problem is None:
+            InfoBar.success(
+                "The middle router answers", f"Router Checker can reach it at {endpoint}.",
+                duration=6000, position=InfoBarPosition.TOP, parent=self.window(),
+            )  # fmt: skip
+        else:
+            InfoBar.warning(
+                "No answer from the middle router", f"{endpoint}: {problem}.",
+                duration=8000, position=InfoBarPosition.TOP, parent=self.window(),
+            )  # fmt: skip
+
     def _show_startup(self) -> None:
         """Windows holds this setting (Task Manager can change it too), not settings.json."""
         self.startup.blockSignals(True)
@@ -524,6 +592,10 @@ class SettingsPage(Page):
         try:
             self.interval.setCurrentIndex(max(0, self.interval.findData(settings.interval_min)))
             self.network_change.setChecked(settings.check_on_network_change)
+            self.middle.setText(settings.middle_router)
+            self.middle.setError(False)
+            self.test_all_card.setVisible(self.controller.can_switch)
+            self.auto_switch_card.setVisible(self.controller.can_switch)
             index = self.connection.findData(settings.connection.value)
             self.connection.setCurrentIndex(max(0, index))
             self.test_all_switch.setChecked(settings.scheduled_test_all)

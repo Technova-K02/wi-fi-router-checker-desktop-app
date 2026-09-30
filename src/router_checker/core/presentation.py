@@ -115,6 +115,12 @@ def overall_status(report: CycleReport | None, failure: str | None = None) -> St
         return Status(
             StatusLevel.UNKNOWN, "Not connected", NOT_CONNECTED[report.settings.connection]
         )
+    if report.match.router is None and report.middle is not None:
+        if report.upstream_ip is None:
+            detail = "Couldn't tell which router the middle router is on (no second hop)."
+        else:
+            detail = f"The middle router is on a router at {report.upstream_ip}, not one of yours."
+        return Status(StatusLevel.UNKNOWN, "Unknown router", detail)
     if report.match.router is None:
         ssid = report.connection.ssid if report.connection else ""
         name = f'"{ssid}"' if ssid else "This network"
@@ -328,6 +334,8 @@ class CurrentMetrics:
     signal_quality: int | None
     wired: bool = False
     via_vpn: bool = False  # internet numbers include the VPN
+    middle_ms: float | None = None  # to the middle router, when the PC is behind it
+    behind_middle: bool = False
 
 
 def current_metrics(report: CycleReport | None) -> CurrentMetrics | None:
@@ -348,6 +356,8 @@ def current_metrics(report: CycleReport | None) -> CurrentMetrics | None:
         signal_quality=test.signal_quality,
         wired=rec.link is LinkKind.ETHERNET,
         via_vpn=rec.via_vpn,
+        middle_ms=test.middle_ping.median_ms if test.middle_ping else None,
+        behind_middle=report.middle is not None,
     )
 
 

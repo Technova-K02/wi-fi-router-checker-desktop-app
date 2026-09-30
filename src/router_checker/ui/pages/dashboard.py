@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import QHBoxLayout, QVBoxLayout, QWidget
@@ -264,7 +266,11 @@ class CurrentRouterCard(SimpleCardWidget):
             entry = next((e for e in report.scan if e.bssid == conn.bssid), None)
         if entry is not None and not wired:  # a cable doesn't use the router's Wi-Fi band
             parts.append(band_text(entry))
-        if report.gateway is not None:
+        if report.middle is not None:
+            parts.append(f"middle router {report.middle.host}")
+            if report.upstream_ip:
+                parts.append(f"router {report.upstream_ip}")
+        elif report.gateway is not None:
             parts.append(f"gateway {report.gateway.gateway_ip}")
             if report.gateway.gateway_mac:
                 parts.append(str(report.gateway.gateway_mac))
@@ -287,10 +293,15 @@ class CurrentRouterCard(SimpleCardWidget):
                 if metrics.gateway_silent
                 else f"p95 {fmt_ms(metrics.gateway_p95_ms)}"
             )
+            gw_tip = "Round trip to your router (the default gateway), median of the pings."
+            if metrics.behind_middle:
+                gw_note = f"middle router {fmt_ms(metrics.middle_ms)}"
+                gw_tip = (
+                    "Round trip to the router your middle router is on, median of the pings. "
+                    "Below it: the round trip to the middle router itself."
+                )
             self.gateway.set_values(
-                DASH if metrics.gateway_silent else fmt_ms(metrics.gateway_ms),
-                gw_note,
-                "Round trip to your router (the default gateway), median of the pings.",
+                DASH if metrics.gateway_silent else fmt_ms(metrics.gateway_ms), gw_note, gw_tip
             )
             vpn_note = "\nMeasured through the VPN, which blocks other traffic."
             self.internet.set_values(
@@ -325,8 +336,12 @@ class CurrentRouterCard(SimpleCardWidget):
             self.unknown_text.setText(
                 "Add it to compare it with your other routers and get alerts when it's unstable."
             )
-            macs = [m for m in (report.gateway.gateway_mac, conn.bssid if conn else None) if m]
-            self._prefill = Router.create(ssid or "New router", ssid=ssid or None, macs=macs)
+            if report.middle is not None:  # a router behind the middle router: its address
+                self._prefill = replace(Router.create("New router"), address=report.upstream_ip)
+            else:
+                gateway_mac = report.gateway.gateway_mac
+                macs = [m for m in (gateway_mac, conn.bssid if conn else None) if m]
+                self._prefill = Router.create(ssid or "New router", ssid=ssid or None, macs=macs)
         self._set_rows(rec is not None, unknown, metrics is not None, can_switch)
 
     def _show_recommendation(self, rec: Recommendation | None, routers: tuple[Router, ...]) -> None:
@@ -552,6 +567,8 @@ class DashboardPage(Page):
         self.check_button.setEnabled(not busy)
         location_off = report is not None and not report.location_allowed
         wired = c.on_ethernet
+        self.test_all_button.setVisible(c.can_switch)  # a middle router can be set up later
+        location_off = location_off and not c.behind_middle  # the middle router doesn't need it
         self.test_all_button.setEnabled(not busy and not location_off and not wired)
         self.test_all_button.setToolTip(
             ON_ETHERNET if wired else TEST_ALL_NEEDS_LOCATION if location_off else TEST_ALL_TIP

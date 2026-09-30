@@ -11,7 +11,11 @@ import pytest
 
 from fakes import (
     GW,
+    MIDDLE,
+    NB_ADDRESS,
+    NB_BSSID,
     T0,
+    ZTE_ADDRESS,
     ZTE_BSSID,
     ZTE_LAN,
     FakeIdle,
@@ -19,15 +23,26 @@ from fakes import (
     FakeWatcher,
     cable_gateway,
     gateway_info,
+    mac,
+    middle_parts,
+    middle_routers,
     network_parts,
     sample_routers,
 )
+from router_checker.core.middle import Endpoint
+from router_checker.core.middle_switching import MiddleMarker, MiddleMarkerFile
 from router_checker.core.models import AlertKind, Event, LinkKind, Router, Verdict
 from router_checker.core.presentation import StatusLevel
 from router_checker.core.quiet_hours import QuietHours, parse_hhmm
 from router_checker.core.settings import Settings, load_settings
 from router_checker.core.switching import ON_ETHERNET, MarkerFile, RestoreMarker, SwitchTiming
-from router_checker.ui.controller import MARKER_FILE, AppController, Services, gateway_key
+from router_checker.ui.controller import (
+    MARKER_FILE,
+    MIDDLE_MARKER_FILE,
+    AppController,
+    Services,
+    gateway_key,
+)
 
 FAST = SwitchTiming(connect_timeout_s=1.0, settle_s=0.0, poll_s=0.01)
 
@@ -51,6 +66,7 @@ def make(tmp_path):
             switcher=parts["switcher"],
             idle=parts.get("idle", FakeIdle()),
             startup=parts.get("startup"),
+            middle=parts.get("middle"),
         )
         settings = settings or Settings(pings_per_target=4, routers=sample_routers())
         controller = AppController(
@@ -630,3 +646,106 @@ def test_even_a_down_router_isnt_switched_away_from_on_a_cable(qtbot, make) -> N
 
 def test_plugging_in_a_cable_counts_as_a_network_change() -> None:
     assert gateway_key(gateway_info(GW, ZTE_LAN)) != gateway_key(cable_gateway(GW, ZTE_LAN))
+
+
+# --- behind a middle router -------------------------------------------------------------
+
+
+def middle_setup(make, **settings):
+    parts = middle_parts()
+    s = Settings(
+        pings_per_target=4, routers=middle_routers(), middle_router=f"{MIDDLE}:8080", **settings
+    )
+    controller, _, _ = make(s, **parts)
+    return controller, parts
+
+
+def test_behind_the_middle_router_the_switch_button_asks_it(qtbot, make) -> None:
+    controller, parts = middle_setup(make)
+    with qtbot.waitSignal(controller.checkFinished, timeout=TIMEOUT):
+        controller.check_now()
+    assert controller.behind_middle and not controller.on_ethernet
+    assert controller.last_snapshot.report.match.router.id == "zte"
+    assert controller.can_switch_to("nb")
+    with qtbot.waitSignal(controller.switchFinished, timeout=TIMEOUT) as finished:
+        assert controller.switch_to("nb")
+    assert finished.args[0].title == "Switched to Neighbor"
+    assert parts["middle"].calls == [NB_BSSID]
+    assert parts["switcher"].calls == []  # this PC's Wi-Fi wasn't touched
+    assert controller.last_snapshot.report.match.router.id == "nb"
+    assert controller.settings.router("nb").middle_bssid == mac(NB_BSSID)  # learned
+
+
+def test_test_all_through_the_middle_router(qtbot, make) -> None:
+    controller, parts = middle_setup(make)
+    with qtbot.waitSignal(controller.checkFinished, timeout=TIMEOUT):
+        controller.check_now()
+    plan = plan_now(qtbot, controller)
+    assert plan.via_middle and [c.router.id for c in plan.to_test] == ["nb"]
+    with qtbot.waitSignal(controller.testAllFinished, timeout=TIMEOUT) as finished:
+        assert controller.start_test_all(plan)
+    message = finished.args[0]
+    assert message.title == "Test all finished"
+    assert message.text.endswith("The middle router is back on ZTE.")
+    assert parts["middle"].calls == [NB_BSSID, ZTE_BSSID]
+    assert controller.last_snapshot.report.match.router.id == "zte"
+
+
+class UpstreamPing:
+    """The internet answers except through routers in ``down``."""
+
+    def __init__(self, inner):
+        self.inner, self.down = inner, set()
+
+    def ping(self, address, count, timeout_ms, spacing_ms, stop=None, source=None):
+        if self.inner.upstream in self.down and address != MIDDLE:
+            return [None] * count
+        return self.inner.ping(address, count, timeout_ms, spacing_ms, stop=stop, source=source)
+
+    def hop(self, *args, **kwargs):
+        return self.inner.hop(*args, **kwargs)
+
+
+def test_it_switches_automatically_when_the_router_behind_it_is_down(qtbot, make) -> None:
+    parts = middle_parts()
+    parts["ping"] = UpstreamPing(parts["ping"])
+    parts["middle"].ping = parts["ping"].inner
+    parts["ping"].down.add(ZTE_ADDRESS)
+    s = Settings(
+        pings_per_target=4, routers=middle_routers(), middle_router=f"{MIDDLE}:8080",
+        auto_switch=True,
+    )  # fmt: skip
+    controller, _, _ = make(s, **parts)
+    with qtbot.waitSignal(controller.checkFinished, timeout=TIMEOUT):
+        controller.check_now()
+    with qtbot.waitSignal(controller.autoSwitched, timeout=TIMEOUT) as switched:
+        controller.check_now()  # down twice in a row: switch to the best one it can reach
+    assert switched.args[0].title == "Switched to Neighbor"
+    assert parts["middle"].calls == [NB_BSSID]
+    assert controller.last_snapshot.report.match.router.id == "nb"
+
+
+def test_start_switches_the_middle_router_back_after_an_interrupted_test_all(
+    qtbot, make, tmp_path
+) -> None:
+    parts = middle_parts(upstream=NB_ADDRESS)  # the app died while on the Neighbor
+    marker = MiddleMarker(T0, "zte", ZTE_ADDRESS, (mac(ZTE_BSSID),), ("nb",))
+    MiddleMarkerFile(tmp_path / MIDDLE_MARKER_FILE).save(marker)
+    s = Settings(pings_per_target=4, routers=middle_routers(), middle_router=MIDDLE)
+    controller, _, _ = make(s, **parts)
+    with qtbot.waitSignal(controller.checkFinished, timeout=TIMEOUT) as finished:
+        controller.start()
+    assert finished.args[0].report.match.router.id == "zte"
+    assert parts["middle"].calls == [ZTE_BSSID]
+    assert not (tmp_path / MIDDLE_MARKER_FILE).exists()
+
+
+def test_the_middle_router_test_button(qtbot, make) -> None:
+    controller, parts = middle_setup(make)
+    answers = []
+    controller.test_middle_router(Endpoint(MIDDLE, 8080), answers.append)
+    qtbot.waitUntil(lambda: bool(answers), timeout=TIMEOUT)
+    parts["middle"].down = True
+    controller.test_middle_router(Endpoint(MIDDLE, 8080), answers.append)
+    qtbot.waitUntil(lambda: len(answers) == 2, timeout=TIMEOUT)
+    assert answers == [None, "connection refused"]

@@ -180,6 +180,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     from router_checker.platform_windows.icmp import WindowsPingService
     from router_checker.platform_windows.idle import WindowsIdleMonitor
+    from router_checker.platform_windows.middle_http import HttpMiddleRouter
     from router_checker.platform_windows.netinfo import WindowsNetworkInfoService
     from router_checker.platform_windows.netwatch import RouteChangeWatcher
     from router_checker.platform_windows.startup import WindowsStartup
@@ -206,6 +207,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         idle=WindowsIdleMonitor(),
         startup=startup,
         has_wifi=has_wifi,
+        middle=HttpMiddleRouter(),
     )
     if is_built():
         try:  # the exe moved or was installed elsewhere: start this copy at sign-in

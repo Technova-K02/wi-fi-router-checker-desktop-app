@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ipaddress
 from dataclasses import replace
 
 from PySide6.QtCore import QRectF, Qt
@@ -68,6 +69,14 @@ class ColorSwatch(QAbstractButton):
             painter.drawEllipse(QRectF(1.5, 1.5, 27, 27))
 
 
+def _is_ipv4(text: str) -> bool:
+    try:
+        ipaddress.IPv4Address(text)
+    except ValueError:
+        return False
+    return True
+
+
 class RouterDialog(MessageBoxBase):
     def __init__(
         self,
@@ -127,6 +136,10 @@ class RouterDialog(MessageBoxBase):
         self.ssid.setPlaceholderText("Optional")
         self.ssid.setAccessibleName("Wi-Fi name (SSID)")
         self.ssid.setText((base.ssid or "") if base else "")
+        self.address = LineEdit(self)
+        self.address.setPlaceholderText("Behind your middle router, e.g. 192.168.1.1")
+        self.address.setAccessibleName("Address behind the middle router")
+        self.address.setText((base.address or "") if base else "")
         self.mac_rows = QWidget(self)
         self.mac_layout = QVBoxLayout(self.mac_rows)
         self.mac_layout.setContentsMargins(0, 0, 0, 0)
@@ -172,7 +185,7 @@ class RouterDialog(MessageBoxBase):
         form.setHorizontalSpacing(16)
         form.setVerticalSpacing(10)
         form.setColumnStretch(1, 1)
-        labels = ["Name", "Wi-Fi name (SSID)", "MAC addresses", "", "", "", "Color"]
+        labels = ["Name", "Wi-Fi name (SSID)", "MAC addresses", "", "", "", "Color", "Address"]
         for row, text in enumerate(labels):
             if text:
                 align = Qt.AlignmentFlag.AlignTop if row == 2 else Qt.AlignmentFlag.AlignVCenter
@@ -184,6 +197,11 @@ class RouterDialog(MessageBoxBase):
         form.addWidget(self.mac_feedback, 4, 1)
         form.addLayout(current_row, 5, 1)
         form.addLayout(swatch_row, 6, 1)
+        form.addWidget(self.address, 7, 1)
+        # Only matters behind a middle router (it's learned there, too).
+        if controller.settings.middle is None and not (base and base.address):
+            self.address.hide()
+            form.itemAtPosition(7, 0).widget().hide()
 
         self.error = BodyLabel("", self)
         self.error.setTextColor(*ERROR_COLORS)
@@ -236,7 +254,12 @@ class RouterDialog(MessageBoxBase):
             self._show_error("Give the router a name.")
             self.name.setFocus()
             return False
-        if not self._macs and not ssid:
+        address = self.address.text().strip() or None
+        if address is not None and not _is_ipv4(address):
+            self._show_error(f"{address} isn't an address like 192.168.1.1.")
+            self.address.setFocus()
+            return False
+        if not self._macs and not ssid and not address:
             self._show_error("Add a MAC address or a Wi-Fi name so the router can be recognized.")
             return False
         others = [
@@ -252,13 +275,21 @@ class RouterDialog(MessageBoxBase):
         if ssid and any(r.ssid == ssid for r in others):
             self._show_error(f'Another router already uses the Wi-Fi name "{ssid}".')
             return False
+        owner = next((r for r in others if address and r.address == address), None)
+        if owner is not None:
+            self._show_error(f"{owner.name} already has the address {address}.")
+            return False
         try:
             if self._editing is None:
-                self._result = Router.create(name, color=self._color, ssid=ssid, macs=self._macs)
+                created = Router.create(name, color=self._color, ssid=ssid, macs=self._macs)
+                self._result = replace(created, address=address)
             else:
+                bssid = self._editing.middle_bssid
                 self._result = replace(
-                    self._editing, name=name, color=self._color, ssid=ssid, macs=tuple(self._macs)
-                )
+                    self._editing, name=name, color=self._color, ssid=ssid,
+                    macs=tuple(self._macs), address=address,
+                    middle_bssid=bssid if bssid in self._macs else None,
+                )  # fmt: skip
         except ValueError as exc:
             self._show_error(str(exc))
             return False

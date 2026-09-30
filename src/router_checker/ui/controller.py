@@ -26,6 +26,13 @@ from router_checker.core.auto_switch import Action, AutoSwitchPolicy, CheckView,
 from router_checker.core.checker import CheckEngine, CycleReport
 from router_checker.core.errors import LocationPermissionError, WifiUnavailableError
 from router_checker.core.export import write_checks_csv
+from router_checker.core.middle import Endpoint
+from router_checker.core.middle_switching import (
+    MiddleMarkerFile,
+    MiddleRunner,
+    gather_middle_plan,
+    plan_middle,
+)
 from router_checker.core.models import (
     CheckRecord,
     Event,
@@ -54,6 +61,7 @@ from router_checker.core.protocols import (
     DnsService,
     HistoryStore,
     IdleMonitor,
+    MiddleRouterClient,
     NetworkChangeWatcher,
     NetworkInfoService,
     PingService,
@@ -70,6 +78,7 @@ from router_checker.core.switching import (
     TEST_ALL_EVENT,
     MarkerFile,
     Progress,
+    RunnerBase,
     Stage,
     SwitchResult,
     SwitchRunner,
@@ -91,6 +100,8 @@ HISTORY_LIMIT = 200
 EVENTS_LIMIT = 100
 SCAN_REUSE = timedelta(minutes=10)  # plan with the last check's scan when it's this recent
 MARKER_FILE = "test-all-restore.json"
+MIDDLE_MARKER_FILE = "middle-restore.json"  # the same, behind the middle router
+NO_MIDDLE_CLIENT = "Switching through the middle router isn't available here."
 NO_SWITCHER = "Switching networks isn't available here."
 
 
@@ -106,6 +117,7 @@ class Services:
     idle: IdleMonitor | None = None  # scheduled Test all waits for the user to be away
     startup: StartupService | None = None  # Start with Windows
     has_wifi: bool = True  # False on a PC without a Wi-Fi adapter
+    middle: MiddleRouterClient | None = None  # switching through your middle router
 
 
 @dataclass(frozen=True, slots=True)
@@ -257,6 +269,20 @@ class AppController(QObject):
                 self._marker,
                 switch_timing or SwitchTiming(),
             )
+        self._middle_marker = (
+            MiddleMarkerFile(settings_path.parent / MIDDLE_MARKER_FILE) if settings_path else None
+        )
+        self._middle_runner: MiddleRunner | None = None
+        if services.middle is not None:
+            self._middle_runner = MiddleRunner(
+                self._engine,
+                services.middle,
+                services.netinfo,
+                store,
+                services.clock,
+                self._middle_marker,
+                switch_timing or SwitchTiming(),
+            )
         self._pool = QThreadPool(self)
         self._pool.setMaxThreadCount(4)
         self._callbacks: dict[int, tuple[Callable[[Any], None], Callable[[Any], None] | None]] = {}
@@ -316,7 +342,30 @@ class AppController(QObject):
 
     @property
     def can_switch(self) -> bool:
-        return self._runner is not None
+        """Test all and switching exist here: over Wi-Fi, or through a middle router."""
+        middle = self._middle_runner is not None and self._settings.middle is not None
+        return self._runner is not None or middle
+
+    @property
+    def behind_middle(self) -> bool:
+        """The last check found the PC behind your middle router."""
+        snap = self.last_snapshot
+        return snap is not None and snap.report.middle is not None
+
+    def _active_runner(self) -> RunnerBase | None:
+        """What switches routers right now: the middle router when the PC is behind
+        it, otherwise this PC's Wi-Fi (not on a cable)."""
+        if self.behind_middle:
+            return self._middle_runner
+        return None if self.on_ethernet else self._runner
+
+    def test_middle_router(self, endpoint: Endpoint, on_done: Callable[[str | None], None]) -> None:
+        """Does the middle router answer? None if it does, else why not (worker thread)."""
+        client = self._services.middle
+        if client is None:
+            on_done(NO_MIDDLE_CLIENT)
+            return
+        self.run_task(lambda: client.reachable(endpoint), on_done, lambda e: on_done(str(e)))
 
     @property
     def has_wifi(self) -> bool:
@@ -406,18 +455,20 @@ class AppController(QObject):
         """The Switch button (or a notification's) may offer this router right now."""
         snap = self.last_snapshot
         return (
-            self._runner is not None
+            self._active_runner() is not None
             and snap is not None
             and router_id in snap.switchable
             and not self.is_busy
-            and not self.on_ethernet
         )
 
     @property
     def on_ethernet(self) -> bool:
-        """The last check went over a cable: Test all and switching are off."""
+        """The last check went over a cable, not through a middle router: Test all and
+        switching are off."""
         snap = self.last_snapshot
-        return snap is not None and snap.report.gateway is not None and snap.report.gateway.wired
+        if snap is None or snap.report.gateway is None:
+            return False
+        return snap.report.gateway.wired and snap.report.middle is None
 
     # --- lifecycle --------------------------------------------------------------
 
@@ -429,7 +480,13 @@ class AppController(QObject):
         self.run_task(lambda: store.last_event(TEST_ALL_EVENT), self._loaded_last_test_all)
         self.run_task(lambda: store.last_event(SWITCH_EVENT), self._loaded_last_switch)
         if self._runner is not None and self._marker is not None and self._marker.path.exists():
-            self._recover()
+            self._recover(self._runner)
+        elif (
+            self._middle_runner is not None
+            and self._middle_marker is not None
+            and self._middle_marker.path.exists()
+        ):
+            self._recover(self._middle_runner)
         else:
             self.check_now()
 
@@ -477,6 +534,20 @@ class AppController(QObject):
 
     def _switchable(self, report: CycleReport) -> frozenset[str]:
         """Routers Test all could switch to right now (worker thread)."""
+        if report.middle is not None:
+            if self._middle_runner is None:
+                return frozenset()
+            observed = {}
+            for router in report.settings.routers:
+                observation = self._store.latest_observation(router.id)
+                if observation is not None:
+                    observed[router.id] = observation.entry.bssid
+            plan = plan_middle(report.settings.routers, report.upstream_ip, report.scan, observed)
+            return (
+                frozenset(c.router.id for c in plan.to_test)
+                if plan.blocker is None
+                else frozenset()
+            )
         switcher = self._services.switcher
         if switcher is None or report.scan is None:
             return frozenset()
@@ -559,6 +630,19 @@ class AppController(QObject):
         on_error: Callable[[BaseException], None] | None = None,
     ) -> None:
         """Work out what Test all would do (worker thread; a recent scan is reused)."""
+        if self.behind_middle:
+            if self._middle_runner is None:
+                on_done(TestAllPlan(None, None, blocker=NO_MIDDLE_CLIENT))
+                return
+            engine, netinfo, stop = self._engine, self._services.netinfo, self._stop
+            wifi = self._services.wifi if self.has_wifi else None
+            store, scan = self._store, self._recent_scan()
+            self.run_task(
+                lambda: gather_middle_plan(engine, netinfo, wifi, store, scan, stop),
+                on_done,
+                on_error,
+            )
+            return
         switcher = self._services.switcher
         if switcher is None:
             on_done(TestAllPlan(None, None, blocker=NO_SWITCHER))
@@ -576,7 +660,8 @@ class AppController(QObject):
         """Start Test all with a plan from ``plan_test_all``. During a check it starts
         once the check ends. False if it can't run (busy with another run, or the plan
         has nothing to test)."""
-        if self._stopped or self._runner is None or not plan.can_run:
+        runner = self._middle_runner if plan.via_middle else self._runner
+        if self._stopped or runner is None or not plan.can_run:
             return False
         if self._run is not None or self._queued is not None:
             return False
@@ -585,7 +670,7 @@ class AppController(QObject):
             self.activityChanged.emit()
             return True
         run = _Run("test_all", scheduled=scheduled, total=len(plan.to_test))
-        runner, exiting = self._runner, self._stop
+        exiting = self._stop
         log.info("Test all starts%s: %d routers", " (scheduled)" if scheduled else "", run.total)
         self._begin(run)
         self.run_task(
@@ -615,15 +700,14 @@ class AppController(QObject):
         """Connect to another router (the Switch button); back to where you were if that
         fails. Ends with a check. False if it can't start now."""
         router = self._settings.router(router_id)
-        if router is None or self._stopped or self._runner is None or self.is_busy:
-            return False
-        if self.on_ethernet:
+        if router is None or self._stopped or self._active_runner() is None or self.is_busy:
             return False
         self._start_switch(router, None)
         return True
 
     def _start_switch(self, router: Router, decision: Decision | None) -> None:
         switcher, runner, stop = self._services.switcher, self._runner, self._stop
+        behind = self.behind_middle
         wifi, netinfo = self._services.wifi, self._services.netinfo
         routers, scan = self._settings.routers, self._recent_scan()
         names = {r.id: r.name for r in routers}
@@ -631,7 +715,15 @@ class AppController(QObject):
         snap = self.last_snapshot
         current = snap.report.match.router if snap else None
 
+        middle, engine, store = self._middle_runner, self._engine, self._store
+        wifi_for_scan = wifi if self.has_wifi else None
+
         def work() -> SwitchResult:
+            if behind:
+                assert middle is not None
+                plan = gather_middle_plan(engine, netinfo, wifi_for_scan, store, scan, stop)
+                return middle.switch(plan, router, stop=stop, reason=reason)
+            assert runner is not None
             plan = gather_plan(routers, wifi, netinfo, switcher, scan, stop)
             return runner.switch(plan, router, stop=stop, reason=reason)
 
@@ -641,8 +733,8 @@ class AppController(QObject):
         self._begin(run)
         self.run_task(work, self._on_run_done, self._on_run_failed)
 
-    def _recover(self) -> None:
-        runner, stop = self._runner, self._stop
+    def _recover(self, runner: SwitchRunner | MiddleRunner) -> None:
+        stop = self._stop
         self._begin(_Run("recover"))
         self.run_task(lambda: runner.recover(stop=stop), self._on_recovered, self._on_recovered)
 
@@ -688,6 +780,8 @@ class AppController(QObject):
             self._last_test_all = self.now()
             if outcome.linked:
                 self._set_settings(self._settings.with_linked_macs(outcome.linked))
+        elif isinstance(outcome, SwitchResult) and outcome.linked is not None:
+            self._set_settings(self._settings.with_linked_macs([outcome.linked]))
         self._finish_with_check()
 
     def _on_run_failed(self, exc: BaseException) -> None:
@@ -741,7 +835,7 @@ class AppController(QObject):
     @property
     def auto_switch_text(self) -> str | None:
         """The dashboard's line about automatic switching, when it's on."""
-        if not self._settings.auto_switch or self._runner is None:
+        if not self._settings.auto_switch or not self.can_switch:
             return None
         if self.on_ethernet:
             return "Automatic switching is paused while you're on Ethernet."
@@ -757,7 +851,7 @@ class AppController(QObject):
         snap = self.last_snapshot
         switchable = snap.switchable if snap is not None else frozenset()
         current = report.match.router if report.record is not None else None
-        if report.gateway is not None and report.gateway.wired:
+        if report.gateway is not None and report.gateway.wired and report.middle is None:
             current = None  # nothing to switch on a cable; the streak starts over after it
         candidates = {
             s.router.id: s.score
@@ -780,7 +874,7 @@ class AppController(QObject):
         router = self._settings.router(decision.router_id or "")
         if not self._settings.auto_switch or router is None:
             return
-        if self._stopped or self._runner is None or self.is_busy:
+        if self._stopped or self._active_runner() is None or self.is_busy:
             log.info("automatic switch to %s skipped: busy", router.name)
             return
         self._start_switch(router, decision)
@@ -799,7 +893,7 @@ class AppController(QObject):
         if (
             not s.scheduled_test_all
             or self._stopped
-            or self._runner is None
+            or self._active_runner() is None
             or idle_monitor is None
         ):
             return

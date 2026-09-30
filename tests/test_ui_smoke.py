@@ -9,13 +9,17 @@ from qfluentwidgets import InfoBar, PushButton, Theme, setTheme
 
 from fakes import (
     GW,
+    MIDDLE,
     WIFI_IP,
+    ZTE_ADDRESS,
     FakeNetInfo,
     FakeStartup,
     FakeWatcher,
     FakeWifi,
     cable_gateway,
     gateway_info,
+    middle_parts,
+    middle_routers,
     network_parts,
     sample_routers,
 )
@@ -490,4 +494,95 @@ def test_a_pc_without_wifi_hides_the_wifi_parts(qtbot, ethernet_pc) -> None:
     dialog = RouterDialog(controller, parent=window)
     assert dialog.network_list.isHidden()
     assert dialog.scan_note.text().startswith("This PC has no Wi-Fi adapter")
+    dialog.reject()
+
+
+# --- a middle router ----------------------------------------------------------------------
+
+
+@pytest.fixture
+def middle_app(qtbot, tmp_path):
+    """On a cable into the middle router, which is on the ZTE."""
+    parts = middle_parts()
+    services = Services(
+        parts["wifi"], parts["ping"], parts["dns"], parts["netinfo"], parts["clock"],
+        FakeWatcher(), parts["switcher"], middle=parts["middle"],
+    )  # fmt: skip
+    settings = Settings(
+        pings_per_target=4, routers=middle_routers(), first_run_done=True,
+        middle_router=f"{MIDDLE}:8080",
+    )  # fmt: skip
+    controller = AppController(
+        settings, tmp_path / "settings.json", parts["store"], services,
+        switch_timing=SwitchTiming(1.0, 0.0, 0.01),
+    )  # fmt: skip
+    window = MainWindow(controller)
+    qtbot.addWidget(window)
+    yield controller, window, parts
+    window.prepare_quit()
+    controller.shutdown()
+
+
+def test_the_dashboard_behind_the_middle_router(qtbot, middle_app) -> None:
+    controller, window, _ = middle_app
+    check(qtbot, controller)
+    window.dashboard.refresh()
+    card = window.dashboard.current
+    assert card.name.text() == "ZTE"
+    assert card.network.text() == f"Ethernet · middle router {MIDDLE} · router {ZTE_ADDRESS}"
+    assert (card.gateway.value.text(), card.gateway.note.text()) == (
+        "2.0 ms",
+        "middle router 1.0 ms",
+    )
+    button = window.dashboard.test_all_button
+    assert not button.isHidden() and button.isEnabled()
+
+
+def test_an_unknown_router_behind_the_middle_router_can_be_added(qtbot, middle_app) -> None:
+    controller, window, parts = middle_app
+    parts["ping"].upstream = "172.16.0.1"
+    check(qtbot, controller)
+    window.dashboard.refresh()
+    card = window.dashboard.current
+    assert card.status.title.text() == "Unknown router"
+    assert card._prefill.address == "172.16.0.1"
+    dialog = RouterDialog(controller, prefill=card._prefill, parent=window)
+    assert dialog.address.text() == "172.16.0.1" and not dialog.address.isHidden()
+    dialog.name.setText("Cafe")
+    assert dialog.validate()
+    assert dialog.router().address == "172.16.0.1"
+    dialog.address.setText("172.16.0")
+    assert not dialog.validate() and "isn't an address like" in dialog.error.text()
+    dialog.address.setText(ZTE_ADDRESS)
+    assert (
+        not dialog.validate()
+        and dialog.error.text() == f"ZTE already has the address {ZTE_ADDRESS}."
+    )
+    dialog.reject()
+
+
+def test_the_middle_router_setting(qtbot, middle_app) -> None:
+    controller, window, _ = middle_app
+    page = window.settings_page
+    assert page.middle.text() == f"{MIDDLE}:8080"
+    page.middle.setText("http://192.168.8.2:81/")
+    page._set_middle()
+    assert controller.settings.middle_router == "192.168.8.2:81"
+    page.middle.setText("192.168.8.2:port")
+    page._set_middle()
+    assert page.middle.isError() and controller.settings.middle_router == "192.168.8.2:81"
+    page.middle.setText("")
+    page._set_middle()
+    assert controller.settings.middle_router == ""
+    page.middle.setText(f"{MIDDLE}:8080")
+    page._test_middle()
+    qtbot.waitUntil(lambda: page.middle_test.isEnabled(), timeout=TIMEOUT)
+    bars = window.findChildren(InfoBar)
+    assert any(b.title == "The middle router answers" for b in bars)
+
+
+def test_the_address_field_is_hidden_without_a_middle_router(qtbot, app_parts) -> None:
+    controller, window, _ = app_parts
+    dialog = RouterDialog(controller, parent=window)
+    assert dialog.address.isHidden()
     dialog.reject()
