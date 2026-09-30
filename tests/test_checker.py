@@ -227,3 +227,16 @@ def test_a_stopped_check_raises_and_saves_nothing(routers) -> None:
     report = engine.run_cycle()  # the next check runs normally
     assert report.record.verdict is Verdict.OK
     assert [r.id for r in report.linked] == ["zte"]
+
+
+def test_an_unstable_alert_names_a_better_router(routers) -> None:
+    settings = Settings(pings_per_target=4, routers=routers, unstable_checks=1)
+    engine, parts = make(settings)
+    parts["ping"].replies[GW] = [2.0, None]  # half the pings to the router get lost
+    report = engine.run_cycle()
+    assert report.alert.kind is AlertKind.UNSTABLE
+    assert report.recommendation.router_id == "nb"
+    assert report.alert.recommended_name == "Neighbor"
+    assert report.alert.recommended_score == report.recommendation.score
+    event = parts["store"].events("zte", 1)[0]
+    assert event.message.endswith(report.alert.suggestion)

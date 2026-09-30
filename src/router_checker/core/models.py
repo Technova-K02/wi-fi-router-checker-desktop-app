@@ -268,6 +268,8 @@ class Alert:
     timestamp: datetime
     verdict: Verdict
     reasons: tuple[InstabilityReason, ...] = ()
+    recommended_name: str | None = None  # a router that scores clearly better right now
+    recommended_score: Score | None = None
 
     @property
     def title(self) -> str:
@@ -275,13 +277,35 @@ class Alert:
             return f"{self.router_name} is back to normal"
         if self.verdict is Verdict.INTERNET_DOWN:
             return f"Internet provider problem on {self.router_name}"
+        if self.verdict is Verdict.ROUTER_UNREACHABLE:
+            return f"{self.router_name} is not responding"
         return f"{self.router_name} is unstable"
 
     @property
     def message(self) -> str:
         if self.kind is AlertKind.RECOVERED:
             return "The last checks were stable."
-        return ", ".join(r.value for r in self.reasons).capitalize() or self.verdict.value
+        if self.verdict is Verdict.INTERNET_DOWN:
+            return "The router answers, but no internet target does."
+        if self.verdict is Verdict.ROUTER_UNREACHABLE:
+            return "Neither the router nor the internet answered."
+        text = ", ".join(r.value for r in self.reasons) or self.verdict.value
+        return f"{text[:1].upper()}{text[1:]}."
+
+    @property
+    def suggestion(self) -> str:
+        """"Try Cafe instead (score 85)." when a better router is known, else ""."""
+        if self.kind is AlertKind.RECOVERED or self.recommended_name is None:
+            return ""
+        score = self.recommended_score
+        if score is None:
+            return f"Try {self.recommended_name} instead."
+        return f"Try {self.recommended_name} instead (score {'~' * score.estimated}{score.value})."
+
+    @property
+    def text(self) -> str:
+        """The message and the suggestion together."""
+        return f"{self.message} {self.suggestion}".strip()
 
 
 @dataclass(frozen=True, slots=True)

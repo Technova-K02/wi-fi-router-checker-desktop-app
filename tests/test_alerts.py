@@ -1,10 +1,18 @@
+from dataclasses import replace
 from datetime import timedelta
 
 import pytest
 
 from fakes import T0
 from router_checker.core.alerts import AlertEngine, AlertSnapshot, Thresholds, diagnose
-from router_checker.core.models import AlertKind, InstabilityReason, TargetResult, Verdict
+from router_checker.core.models import (
+    Alert,
+    AlertKind,
+    InstabilityReason,
+    Score,
+    TargetResult,
+    Verdict,
+)
 from router_checker.core.stats import summarize
 
 GOOD = [10.0] * 10
@@ -144,7 +152,29 @@ def test_internet_down_alert_title() -> None:
     engine = AlertEngine(unstable_checks=1)
     alert = engine.process("r1", "Home", T0, Verdict.INTERNET_DOWN, (R.ALL_TARGETS_FAILED,))
     assert alert.title == "Internet provider problem on Home"
-    assert alert.message == "All internet targets failing"
+    assert alert.message == "The router answers, but no internet target does."
+
+
+def test_alert_texts() -> None:
+    unstable = Alert(
+        AlertKind.UNSTABLE, "r1", "Home", T0, Verdict.UNSTABLE, (R.HIGH_LOSS, R.HIGH_JITTER)
+    )
+    assert unstable.title == "Home is unstable"
+    assert unstable.message == "High packet loss, high jitter."
+    assert unstable.suggestion == "" and unstable.text == unstable.message
+
+    better = replace(unstable, recommended_name="Cafe", recommended_score=Score(85, True))
+    assert better.suggestion == "Try Cafe instead (score ~85)."
+    assert better.text == "High packet loss, high jitter. Try Cafe instead (score ~85)."
+
+    down = Alert(
+        AlertKind.UNSTABLE, "r1", "Home", T0, Verdict.ROUTER_UNREACHABLE, (R.GATEWAY_UNREACHABLE,)
+    )
+    assert down.title == "Home is not responding"
+    assert down.message == "Neither the router nor the internet answered."
+
+    recovered = replace(better, kind=AlertKind.RECOVERED)
+    assert recovered.message == "The last checks were stable." and recovered.suggestion == ""
 
 
 def test_snapshot_reports_streaks() -> None:

@@ -20,6 +20,7 @@ from router_checker.core.matching import Match, identify_current, router_state
 from router_checker.core.measurements import to_record
 from router_checker.core.models import (
     Alert,
+    AlertKind,
     CheckRecord,
     Event,
     FullTestResult,
@@ -279,15 +280,25 @@ class CheckEngine:
                 self._store.add_hourly(router.id, now, busy_value, current_score)
         self._store.add_scores(now, [(st.router.id, st.score) for st in statuses if st.score])
 
-        # Alerts for the current router.
+        recommendation = recommend(scored, current.id if current else None, now)
+        if recommendation is not None:
+            for st in statuses:
+                st.recommended = st.router.id == recommendation.router_id
+
+        # Alerts for the current router; an "unstable" one names a better router.
         alert: Alert | None = None
         if current is not None and record is not None:
             alert = self._alerts.process(
                 current.id, current.name, now, record.verdict, record.reasons
             )
+            better = s.router(recommendation.router_id) if recommendation else None
+            if alert is not None and alert.kind is AlertKind.UNSTABLE and better is not None:
+                alert = replace(
+                    alert, recommended_name=better.name, recommended_score=recommendation.score
+                )
             if alert is not None:
                 self._store.add_event(
-                    Event(now, current.id, alert.kind.value, f"{alert.title}: {alert.message}")
+                    Event(now, current.id, alert.kind.value, f"{alert.title}: {alert.text}")
                 )
                 if self._notifier is not None and s.notifications_enabled:
                     self._notifier.notify(alert)
@@ -297,11 +308,6 @@ class CheckEngine:
             snap = self._alerts.snapshot(current.id)
             confirmed_unstable = snap.bad_streak >= self._alerts.unstable_checks
             recovering = snap.alerting and record.verdict is Verdict.OK
-
-        recommendation = recommend(scored, current.id if current else None, now)
-        if recommendation is not None:
-            for st in statuses:
-                st.recommended = st.router.id == recommendation.router_id
 
         self._maybe_purge(now)
         return CycleReport(

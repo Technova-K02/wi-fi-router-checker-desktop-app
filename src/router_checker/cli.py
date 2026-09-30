@@ -94,7 +94,7 @@ class App:
 
 class ConsoleNotifier:
     def notify(self, alert: Alert) -> None:
-        print(f"\n  *** ALERT: {alert.title} - {alert.message}")
+        print(f"\n  *** ALERT: {alert.title} - {alert.text}")
 
 
 # --- report printing --------------------------------------------------------------
@@ -198,7 +198,7 @@ def print_report(report: CycleReport) -> None:
         )
         print(f"\nRecommended: {rec_router.name if rec_router else '?'}{margin}")
     if report.alert:
-        print(f"\nALERT: {report.alert.title} - {report.alert.message}")
+        print(f"\nALERT: {report.alert.title} - {report.alert.text}")
     state = "unstable, checking every minute" if report.unstable else "stable"
     print(f"\nNext check: {_local(report.next_check_at)} ({state})")
 

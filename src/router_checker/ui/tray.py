@@ -191,7 +191,7 @@ class TrayIcon(QObject):
     def notify_alert(self, alert: Alert) -> None:
         good = alert.kind is AlertKind.RECOVERED
         icon = self._icons[StatusLevel.GOOD if good else StatusLevel.BAD]
-        self.tray.showMessage(alert.title, alert.message, icon, 10_000)
+        self.tray.showMessage(alert.title, alert.text, icon, 10_000)
 
     def notify_hidden(self) -> None:
         self.tray.showMessage(
