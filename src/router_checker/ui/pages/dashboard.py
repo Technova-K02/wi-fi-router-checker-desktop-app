@@ -40,7 +40,9 @@ from router_checker.core.presentation import (
     score_text,
     state_detail,
     targets_text,
+    vpn_text,
 )
+from router_checker.core.switching import ON_ETHERNET
 from router_checker.ui.controller import SPARKLINE_SPAN, AppController, RunState, Snapshot
 from router_checker.ui.pages.base import Page
 from router_checker.ui.shell import open_location_settings
@@ -251,8 +253,11 @@ class CurrentRouterCard(SimpleCardWidget):
             else:
                 self.name.setText(conn.ssid if conn and conn.ssid else "Unknown network")
         parts = []
-        if conn is not None:
+        if report.gateway is not None and report.gateway.wired:
+            parts.append("Ethernet")
+        elif conn is not None:
             parts.append(f'Wi-Fi "{conn.ssid}"' if conn.ssid else "Hidden Wi-Fi")
+        vpn = vpn_text(report)
         entry = current.observation.entry if current and current.observation else None
         if entry is None and conn is not None and conn.bssid and report.scan:
             entry = next((e for e in report.scan if e.bssid == conn.bssid), None)
@@ -262,6 +267,8 @@ class CurrentRouterCard(SimpleCardWidget):
             parts.append(f"gateway {report.gateway.gateway_ip}")
             if report.gateway.gateway_mac:
                 parts.append(str(report.gateway.gateway_mac))
+        if vpn:
+            parts.append(vpn)
         self.network.setText(" · ".join(parts))
         self.status.set_status(status.level, status.title, status.detail)
 
@@ -284,20 +291,30 @@ class CurrentRouterCard(SimpleCardWidget):
                 gw_note,
                 "Round trip to your router (the default gateway), median of the pings.",
             )
+            vpn_note = "\nMeasured through the VPN, which blocks other traffic."
             self.internet.set_values(
                 fmt_ms(metrics.internet_ms),
-                f"p95 {fmt_ms(metrics.internet_p95_ms)}",
-                targets_text(report),
+                f"p95 {fmt_ms(metrics.internet_p95_ms)}" + (" · VPN" if metrics.via_vpn else ""),
+                targets_text(report) + (vpn_note if metrics.via_vpn else ""),
             )
             self.loss.set_values(
                 fmt_pct(metrics.loss_pct),
                 f"gateway {fmt_pct(metrics.gateway_loss_pct)}",
                 "Share of internet pings that got no answer.",
             )
-            quality = (
-                f"quality {metrics.signal_quality}%" if metrics.signal_quality is not None else ""
-            )
-            self.signal.set_values(fmt_dbm(metrics.rssi), quality, "Wi-Fi signal strength (RSSI).")
+            if metrics.wired:
+                self.signal.set_values(
+                    "Cable", "no Wi-Fi signal", "Connected with an Ethernet cable."
+                )
+            else:
+                quality = (
+                    f"quality {metrics.signal_quality}%"
+                    if metrics.signal_quality is not None
+                    else ""
+                )
+                self.signal.set_values(
+                    fmt_dbm(metrics.rssi), quality, "Wi-Fi signal strength (RSSI)."
+                )
 
         rec = report.recommendation
         self._show_recommendation(rec, routers)
@@ -533,8 +550,11 @@ class DashboardPage(Page):
         busy = c.is_busy or self._preparing
         self.check_button.setEnabled(not busy)
         location_off = report is not None and not report.location_allowed
-        self.test_all_button.setEnabled(not busy and not location_off)
-        self.test_all_button.setToolTip(TEST_ALL_NEEDS_LOCATION if location_off else TEST_ALL_TIP)
+        wired = c.on_ethernet
+        self.test_all_button.setEnabled(not busy and not location_off and not wired)
+        self.test_all_button.setToolTip(
+            ON_ETHERNET if wired else TEST_ALL_NEEDS_LOCATION if location_off else TEST_ALL_TIP
+        )
         if busy == self.spinner.isHidden():  # only on changes: start() restarts the animation
             self.spinner.setVisible(busy)
             if busy:
@@ -550,7 +570,8 @@ class DashboardPage(Page):
             self.current.show_snapshot(snap, routers, c.last_failure, can_switch)
 
         self.location_bar.setVisible(location_off)
-        wifi_error = report.wifi_error if report else None
+        # On a cable, Wi-Fi trouble only means the other routers can't be scanned.
+        wifi_error = report.wifi_error if report and not wired else None
         self.wifi_bar.setVisible(bool(wifi_error))
         if wifi_error:
             self.wifi_bar.content = wifi_error[:1].upper() + wifi_error[1:] + "."

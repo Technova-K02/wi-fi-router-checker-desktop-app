@@ -29,6 +29,7 @@ from router_checker.core.presentation import (
     fmt_clock,
     fmt_countdown,
     fmt_ms,
+    no_recommendation_text,
     overall_status,
     recommendation_text,
     score_text,
@@ -122,7 +123,7 @@ class TrayFlyoutView(FlyoutViewBase):
         self.values["Internet ping"].setText(fmt_ms(metrics.internet_ms) if metrics else DASH)
         rec = report.recommendation if report else None
         self.values["Recommended"].setText(
-            recommendation_text(rec, c.settings.routers) if rec else "None right now"
+            recommendation_text(rec, c.settings.routers) if rec else no_recommendation_text(report)
         )
         state = c.run_state
         testing = state is not None and state.kind == "test_all"

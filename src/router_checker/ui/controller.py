@@ -65,6 +65,7 @@ from router_checker.core.scheduler import effective_interval, scheduled_test_all
 from router_checker.core.series import RouterCharts, ScoreLine, max_gap, router_charts, score_lines
 from router_checker.core.settings import Settings, save_settings
 from router_checker.core.switching import (
+    ON_ETHERNET,
     SWITCH_EVENT,
     TEST_ALL_EVENT,
     MarkerFile,
@@ -170,10 +171,11 @@ class _Run:
     from_id: str | None = None  # the router a switch leaves
 
 
-def gateway_key(gateway: GatewayInfo | None) -> tuple[str, str] | None:
+def gateway_key(gateway: GatewayInfo | None) -> tuple[str, str, str] | None:
+    """What changes when you move to another network, or plug in a cable."""
     if gateway is None:
         return None
-    return gateway.gateway_ip, str(gateway.gateway_mac)
+    return gateway.kind.value, gateway.gateway_ip, str(gateway.gateway_mac)
 
 
 def _error_text(exc: object) -> str:
@@ -394,7 +396,14 @@ class AppController(QObject):
             and snap is not None
             and router_id in snap.switchable
             and not self.is_busy
+            and not self.on_ethernet
         )
+
+    @property
+    def on_ethernet(self) -> bool:
+        """The last check went over a cable: Test all and switching are off."""
+        snap = self.last_snapshot
+        return snap is not None and snap.report.gateway is not None and snap.report.gateway.wired
 
     # --- lifecycle --------------------------------------------------------------
 
@@ -540,6 +549,9 @@ class AppController(QObject):
         if switcher is None:
             on_done(TestAllPlan(None, None, blocker=NO_SWITCHER))
             return
+        if self.on_ethernet:
+            on_done(TestAllPlan(None, None, blocker=ON_ETHERNET))
+            return
         wifi, netinfo, stop = self._services.wifi, self._services.netinfo, self._stop
         routers, scan = self._settings.routers, self._recent_scan()
         self.run_task(
@@ -590,6 +602,8 @@ class AppController(QObject):
         fails. Ends with a check. False if it can't start now."""
         router = self._settings.router(router_id)
         if router is None or self._stopped or self._runner is None or self.is_busy:
+            return False
+        if self.on_ethernet:
             return False
         self._start_switch(router, None)
         return True
@@ -715,6 +729,8 @@ class AppController(QObject):
         """The dashboard's line about automatic switching, when it's on."""
         if not self._settings.auto_switch or self._runner is None:
             return None
+        if self.on_ethernet:
+            return "Automatic switching is paused while you're on Ethernet."
         names = {r.id: r.name for r in self._settings.routers}
         return auto_switch_progress(self._policy.progress(self.now()), names)
 
@@ -727,6 +743,8 @@ class AppController(QObject):
         snap = self.last_snapshot
         switchable = snap.switchable if snap is not None else frozenset()
         current = report.match.router if report.record is not None else None
+        if report.gateway is not None and report.gateway.wired:
+            current = None  # nothing to switch on a cable; the streak starts over after it
         candidates = {
             s.router.id: s.score
             for s in report.statuses
@@ -832,7 +850,8 @@ class AppController(QObject):
             self.check_now()
 
     def _probe_gateway(self) -> None:
-        self.run_task(self._services.netinfo.wifi_gateway, self._on_gateway_probed, self._log_error)
+        netinfo, choice = self._services.netinfo, self._settings.connection
+        self.run_task(lambda: netinfo.gateway(choice), self._on_gateway_probed, self._log_error)
 
     def _on_gateway_probed(self, gateway: GatewayInfo | None) -> None:
         key = gateway_key(gateway)

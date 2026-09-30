@@ -81,7 +81,7 @@ def test_router_details_and_history(qtbot, app_parts) -> None:
 def test_unknown_network_offers_to_add_it(qtbot, tmp_path) -> None:
     parts = network_parts()
     parts["wifi"].connection = WifiConnection("Cafe", None, 70)
-    parts["netinfo"].gateway = gateway_info(GW, "99-99-99-99-99-99")
+    parts["netinfo"].wifi = gateway_info(GW, "99-99-99-99-99-99")
     services = Services(
         parts["wifi"], parts["ping"], parts["dns"], parts["netinfo"], parts["clock"], FakeWatcher()
     )

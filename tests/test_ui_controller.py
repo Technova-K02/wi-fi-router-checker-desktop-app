@@ -17,16 +17,17 @@ from fakes import (
     FakeIdle,
     FakeStartup,
     FakeWatcher,
+    cable_gateway,
     gateway_info,
     network_parts,
     sample_routers,
 )
-from router_checker.core.models import AlertKind, Event, Router
+from router_checker.core.models import AlertKind, Event, LinkKind, Router, Verdict
 from router_checker.core.presentation import StatusLevel
 from router_checker.core.quiet_hours import QuietHours, parse_hhmm
 from router_checker.core.settings import Settings, load_settings
-from router_checker.core.switching import MarkerFile, RestoreMarker, SwitchTiming
-from router_checker.ui.controller import MARKER_FILE, AppController, Services
+from router_checker.core.switching import ON_ETHERNET, MarkerFile, RestoreMarker, SwitchTiming
+from router_checker.ui.controller import MARKER_FILE, AppController, Services, gateway_key
 
 FAST = SwitchTiming(connect_timeout_s=1.0, settle_s=0.0, poll_s=0.01)
 
@@ -72,7 +73,7 @@ class GatedPing:
         self.gate = threading.Event()
         self.threads = set()
 
-    def ping(self, *args, stop=None):
+    def ping(self, *args, stop=None, source=None):
         self.threads.add(threading.current_thread())
         deadline = time.monotonic() + TIMEOUT / 1000
         while not self.gate.wait(0.01):
@@ -144,7 +145,7 @@ def test_linked_macs_are_saved(qtbot, make, tmp_path) -> None:
 
 def test_failed_check_is_reported_and_rescheduled(qtbot, make) -> None:
     class BrokenNetInfo:
-        def wifi_gateway(self):
+        def gateway(self, choice=None):
             raise OSError("adapter vanished")
 
     controller, _, _ = make(netinfo=BrokenNetInfo())
@@ -186,7 +187,7 @@ def test_network_change_triggers_a_check(qtbot, make) -> None:
     with qtbot.assertNotEmitted(controller.checkStarted, wait=1500):
         pass
 
-    parts["netinfo"].gateway = gateway_info(GW, "11-22-33-44-55-66")
+    parts["netinfo"].wifi = gateway_info(GW, "11-22-33-44-55-66")
     services.watcher.changed = True
     with qtbot.waitSignal(controller.checkStarted, timeout=3000):
         pass
@@ -492,7 +493,7 @@ class NetworkPing:
     def __init__(self, parts):
         self.inner, self.wifi, self.broken = parts["ping"], parts["wifi"], set()
 
-    def ping(self, address, count, timeout_ms, spacing_ms, stop=None):
+    def ping(self, address, count, timeout_ms, spacing_ms, stop=None, source=None):
         ssid = self.wifi.connection.ssid if self.wifi.connection else None
         if ssid in self.broken:
             return [None] * count
@@ -587,3 +588,45 @@ def test_start_with_windows_goes_through_windows(make) -> None:
         "Windows didn't allow the change (Access is denied)."
     )
     assert controller.starts_with_windows()
+
+
+# --- Ethernet ---------------------------------------------------------------------------
+
+
+def test_on_a_cable_test_all_and_switching_are_off(qtbot, make) -> None:
+    parts, settings = auto_parts(auto_switch=True)
+    controller, _, _ = make(settings, **parts)
+    with qtbot.waitSignal(controller.testAllFinished, timeout=TIMEOUT):
+        controller.start_test_all(plan_now(qtbot, controller))  # the Neighbor measured better
+    assert controller.last_snapshot.report.recommendation is not None
+    parts["netinfo"].cable = cable_gateway()  # now plugged into the ZTE
+    with qtbot.assertNotEmitted(controller.autoSwitched, wait=300):
+        for _ in range(3):
+            with qtbot.waitSignal(controller.checkFinished, timeout=TIMEOUT):
+                controller.check_now()
+    assert controller.on_ethernet
+    report = controller.last_snapshot.report
+    assert report.recommendation is None  # no advice to switch Wi-Fi
+    assert report.match.router.id == "zte" and report.record.link is LinkKind.ETHERNET
+    assert not controller.can_switch_to("nb")
+    assert not controller.switch_to("nb")
+    assert plan_now(qtbot, controller).blocker == ON_ETHERNET
+    assert controller.auto_switch_text == "Automatic switching is paused while you're on Ethernet."
+    assert parts["switcher"].calls == ["connect Neighbor", "connect ZTE-Home"]  # Test all only
+
+
+def test_even_a_down_router_isnt_switched_away_from_on_a_cable(qtbot, make) -> None:
+    parts, settings = auto_parts(auto_switch=True)
+    parts["netinfo"].cable = cable_gateway()
+    parts["ping"].broken.add("ZTE-Home")  # everything times out
+    controller, _, _ = make(settings, **parts)
+    with qtbot.assertNotEmitted(controller.autoSwitched, wait=300):
+        for _ in range(3):
+            with qtbot.waitSignal(controller.checkFinished, timeout=TIMEOUT):
+                controller.check_now()
+    assert controller.last_snapshot.report.record.verdict is Verdict.ROUTER_UNREACHABLE
+    assert parts["switcher"].calls == []
+
+
+def test_plugging_in_a_cable_counts_as_a_network_change() -> None:
+    assert gateway_key(gateway_info(GW, ZTE_LAN)) != gateway_key(cable_gateway(GW, ZTE_LAN))
