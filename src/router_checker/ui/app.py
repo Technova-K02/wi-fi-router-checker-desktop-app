@@ -21,6 +21,7 @@ from router_checker.core.storage import SqliteHistoryStore
 
 APP_ID = "RouterChecker.RouterChecker"
 APP_NAME = "Router Checker"
+EXIT_WAIT_S = 15  # --exit waits this long for the running copy to close
 log = logging.getLogger("router_checker")
 
 
@@ -90,9 +91,40 @@ def make_toaster(data_dir: Path):
         return None
 
 
+def instance_name() -> str:
+    return f"RouterChecker-{getpass.getuser()}"
+
+
+def own_pids(built: bool) -> list[int]:
+    """This copy's processes. The one-file exe runs as two: a launcher that
+    unpacks the app, and the app; the launcher holds the .exe until both end."""
+    return [os.getpid(), os.getppid()] if built else [os.getpid()]
+
+
+def exit_running_copy() -> int:
+    """``--exit``: close the running copy and wait until its processes are gone."""
+    from PySide6.QtCore import QCoreApplication
+
+    from router_checker.platform_windows.processes import wait_for_exit
+    from router_checker.ui.single_instance import request_exit
+
+    _app = QCoreApplication(sys.argv[:1])
+    pids = request_exit(instance_name())
+    if pids is None:
+        return 0
+    log.info("asked the running copy to exit (processes %s)", pids)
+    if wait_for_exit(pids, EXIT_WAIT_S):
+        return 0
+    log.warning("the running copy didn't exit within %d s", EXIT_WAIT_S)
+    return 1
+
+
 def parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(prog="router-checker-app")
     parser.add_argument("--minimized", action="store_true", help="start in the tray")
+    parser.add_argument(
+        "--exit", action="store_true", help="close the running copy (the installer uses it)"
+    )
     parser.add_argument("--data-dir", type=Path, help="default: %%LOCALAPPDATA%%\\RouterChecker")
     return parser.parse_args(argv)
 
@@ -103,6 +135,8 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     data_dir = args.data_dir or win.data_dir()
     setup_logging(data_dir)
+    if args.exit:
+        return exit_running_copy()
     log.info("Router Checker %s starting (data in %s)", __version__, data_dir)
     try:
         win.set_app_user_model_id(APP_ID)
@@ -114,9 +148,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     app.setApplicationVersion(__version__)
     app.setQuitOnLastWindowClosed(False)
 
+    from router_checker.platform_windows.startup import is_built
     from router_checker.ui.single_instance import SingleInstance
 
-    instance = SingleInstance(f"RouterChecker-{getpass.getuser()}")
+    instance = SingleInstance(instance_name(), own_pids(is_built()))
     if instance.already_running():
         log.info("already running; asked the other copy to show itself")
         return 0
@@ -134,7 +169,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     from router_checker.platform_windows.idle import WindowsIdleMonitor
     from router_checker.platform_windows.netinfo import WindowsNetworkInfoService
     from router_checker.platform_windows.netwatch import RouteChangeWatcher
-    from router_checker.platform_windows.startup import WindowsStartup, is_built
+    from router_checker.platform_windows.startup import WindowsStartup
     from router_checker.platform_windows.wlan import WindowsWifiService
     from router_checker.ui.controller import AppController, Services
     from router_checker.ui.main_window import MainWindow
@@ -186,6 +221,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     tray.exitRequested.connect(quit_app)
     window.exitRequested.connect(quit_app)
+    instance.exitRequested.connect(quit_app)
 
     if not settings.first_run_done:
         window.show()
