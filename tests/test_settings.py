@@ -1,11 +1,13 @@
 import json
 from dataclasses import replace
+from datetime import time
 
 import pytest
 
 from fakes import mac
 from router_checker.core.alerts import Thresholds
 from router_checker.core.models import Router
+from router_checker.core.quiet_hours import QuietHours
 from router_checker.core.settings import (
     DEFAULT_TARGETS,
     Settings,
@@ -13,6 +15,7 @@ from router_checker.core.settings import (
     load_settings,
     save_settings,
     settings_from_json,
+    settings_to_json,
 )
 
 
@@ -32,7 +35,7 @@ def test_round_trip(tmp_path) -> None:
         interval_min=15,
         targets=("9.9.9.9",),
         thresholds=Thresholds(3.0, 80.0, 20.0),
-        quiet_hours=(22, 7),
+        quiet_hours=QuietHours(True, time(22, 30), time(6, 45)),
         routers=(router,),
     )
     path = tmp_path / "sub" / "settings.json"
@@ -59,7 +62,6 @@ def test_partial_and_unknown_keys() -> None:
         {"targets": ("1.1.1.1", " ")},
         {"pings_per_target": 0},
         {"retention_days": 0},
-        {"quiet_hours": (22, 24)},
         {"alert_cooldown_min": 0},
     ],
 )
@@ -124,3 +126,16 @@ def test_with_linked_macs_keeps_other_changes() -> None:
 )
 def test_is_valid_target(text: str, ok: bool) -> None:
     assert is_valid_target(text) is ok
+
+
+def test_quiet_hours_json() -> None:
+    saved = json.loads(json.dumps(settings_to_json(Settings())))
+    assert saved["quiet_hours"] == {"enabled": False, "start": "22:00", "end": "07:00"}
+    assert settings_from_json({"quiet_hours": None}).quiet_hours == QuietHours()
+    assert settings_from_json({"quiet_hours": {"enabled": True}}).quiet_hours == QuietHours(True)
+    # Version 0.2 stored [start hour, end hour] and had no off switch.
+    assert settings_from_json({"quiet_hours": [23, 6]}).quiet_hours == QuietHours(
+        True, time(23, 0), time(6, 0)
+    )
+    with pytest.raises(ValueError):
+        settings_from_json({"quiet_hours": {"enabled": True, "start": "25:00"}})

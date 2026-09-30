@@ -12,6 +12,7 @@ import os
 import re
 from collections.abc import Iterable
 from dataclasses import dataclass, field, replace
+from datetime import time
 from pathlib import Path
 from typing import Any
 
@@ -23,6 +24,7 @@ from router_checker.core.alerts import (
 )
 from router_checker.core.mac import MacAddress
 from router_checker.core.models import Router
+from router_checker.core.quiet_hours import QuietHours, format_hhmm, parse_hhmm
 from router_checker.core.scheduler import DEFAULT_INTERVAL_MIN, INTERVAL_CHOICES_MIN
 
 DEFAULT_TARGETS = ("1.1.1.1", "8.8.8.8", "google.com")
@@ -57,7 +59,7 @@ class Settings:
     recovery_checks: int = DEFAULT_RECOVERY_CHECKS
     alert_cooldown_min: int = DEFAULT_COOLDOWN_MIN
     notifications_enabled: bool = True
-    quiet_hours: tuple[int, int] | None = None  # (start hour, end hour), local time
+    quiet_hours: QuietHours = field(default_factory=QuietHours)
     start_with_windows: bool = False
     scheduled_test_all: bool = False
     retention_days: int = DEFAULT_RETENTION_DAYS
@@ -78,8 +80,6 @@ class Settings:
             raise ValueError("alert counts and cooldown must be at least 1")
         if self.retention_days < 1:
             raise ValueError("history retention must be at least 1 day")
-        if self.quiet_hours is not None and not all(0 <= h <= 23 for h in self.quiet_hours):
-            raise ValueError("quiet hours must be between 0 and 23")
 
     def router(self, router_id: str) -> Router | None:
         return next((r for r in self.routers if r.id == router_id), None)
@@ -126,6 +126,18 @@ def _router_from_json(d: dict[str, Any]) -> Router:
     )
 
 
+def _quiet_hours_from_json(value: Any) -> QuietHours:
+    if isinstance(value, list):  # version 0.2 and older: [start hour, end hour], always on
+        start, end = value
+        return QuietHours(True, time(int(start)), time(int(end)))
+    default = QuietHours()
+    return QuietHours(
+        enabled=bool(value.get("enabled", default.enabled)),
+        start=parse_hhmm(str(value.get("start", format_hhmm(default.start)))),
+        end=parse_hhmm(str(value.get("end", format_hhmm(default.end)))),
+    )
+
+
 def settings_to_json(s: Settings) -> dict[str, Any]:
     return {
         "interval_min": s.interval_min,
@@ -142,7 +154,11 @@ def settings_to_json(s: Settings) -> dict[str, Any]:
         "recovery_checks": s.recovery_checks,
         "alert_cooldown_min": s.alert_cooldown_min,
         "notifications_enabled": s.notifications_enabled,
-        "quiet_hours": list(s.quiet_hours) if s.quiet_hours else None,
+        "quiet_hours": {
+            "enabled": s.quiet_hours.enabled,
+            "start": format_hhmm(s.quiet_hours.start),
+            "end": format_hhmm(s.quiet_hours.end),
+        },
         "start_with_windows": s.start_with_windows,
         "scheduled_test_all": s.scheduled_test_all,
         "retention_days": s.retention_days,
@@ -187,8 +203,7 @@ def settings_from_json(data: dict[str, Any]) -> Settings:
             jitter_ms=float(t.get("jitter_ms", d.jitter_ms)),
         )
     if data.get("quiet_hours"):
-        start, end = data["quiet_hours"]
-        kwargs["quiet_hours"] = (int(start), int(end))
+        kwargs["quiet_hours"] = _quiet_hours_from_json(data["quiet_hours"])
     if "routers" in data:
         kwargs["routers"] = tuple(_router_from_json(r) for r in data["routers"])
     return Settings(**kwargs)
