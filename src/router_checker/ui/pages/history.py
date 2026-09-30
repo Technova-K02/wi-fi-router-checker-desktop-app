@@ -17,7 +17,7 @@ from router_checker.core.presentation import (
 from router_checker.ui.controller import AppController, HistoryData
 from router_checker.ui.pages.base import Page
 from router_checker.ui.style import level_text_color
-from router_checker.ui.tables import fill_events, style_table
+from router_checker.ui.tables import fill_events, fill_table, style_table
 
 ALL = "__all__"
 CHECK_COLUMNS = ["Time", "Network", "Result", "Gateway p95", "Internet", "Loss", "Jitter", "Score"]
@@ -82,10 +82,7 @@ class HistoryPage(Page):
     def _show(self, data: HistoryData) -> None:
         now = self.controller.now()
         names = {r.id: r.name for r in self.controller.settings.routers}
-        self.checks.setRowCount(len(data.checks))
-        for row, check in enumerate(data.checks):
-            for col, item in enumerate(self._check_items(check, names, now)):
-                self.checks.setItem(row, col, item)
+        fill_table(self.checks, [self._check_items(check, names, now) for check in data.checks])
         fill_events(self.events, data.events, now, router_names=names)
 
     @staticmethod
