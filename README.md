@@ -25,7 +25,18 @@ uv run python -m router_checker.ui       # with a console for log output, for de
 - Windows 11 may put the tray icon in the hidden-icons area (^); drag it onto the
   taskbar to keep it visible.
 - Left-click the tray icon for the flyout, double-click to open the window.
-- Shortcuts: F5 check now, Ctrl+1 to Ctrl+4 switch pages, Ctrl+N add a router, Ctrl+Q exit.
+- Shortcuts: F5 check now, Ctrl+T Test all, Ctrl+1 to Ctrl+4 switch pages, Ctrl+N add a
+  router, Ctrl+Q exit.
+- **Test all now** (dashboard, tray menu, Ctrl+T) connects to each of your routers in
+  turn, tests it, then reconnects to the network you were on. It asks first and lists
+  what it will test and what it skips, and why. It only uses Wi-Fi profiles Windows has
+  already saved: connect to a router once from the taskbar so Windows keeps its
+  password. Your internet drops for a few seconds at each switch. Cancel or Exit at
+  any time; the original connection is always restored. It needs location access.
+- Settings > Scheduled Test all (off by default) runs it every few hours, but only after
+  5 minutes without keyboard or mouse input.
+- When another router scores clearly better, the dashboard and the "unstable" alert
+  offer **Switch to** that router. If the switch fails, the app goes back.
 - Alerts are Windows notifications with buttons (Open, Check now). They name a
   better router when one scores clearly higher. Settings has quiet hours (off by
   default), a test notification, and a link to Windows' notification settings.
@@ -45,7 +56,7 @@ uv run router-checker watch              # checks on the timer (1 min while unst
 uv run router-checker routers list
 uv run router-checker routers add --name Home --ssid MyWiFi --mac B0-0A-D5-9A-7B-B4
 uv run router-checker routers remove Home
-uv run router-checker profiles           # Wi-Fi profiles saved in Windows
+uv run router-checker profiles           # saved Wi-Fi profiles and their Wi-Fi names
 uv run router-checker location           # open the location privacy settings
 ```
 
@@ -55,6 +66,8 @@ Don't run `watch` while the app is open; both would write the same settings file
 
 Everything stays in `%LOCALAPPDATA%\RouterChecker`: `settings.json`,
 `history.db`, `logs\app.log` and `app-icon.png` (the icon notifications show).
+While Test all is switched away from your network, `test-all-restore.json` names that
+network, so the next start can go back if the app was closed in the middle.
 Both the app and the CLI accept `--data-dir` to use another folder.
 
 The only thing written elsewhere is the notification sender registration,
