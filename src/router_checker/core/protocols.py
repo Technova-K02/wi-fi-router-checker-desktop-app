@@ -158,3 +158,13 @@ class SwitchingPolicy(Protocol):
     ) -> None: ...
 
     def switch_failed(self, router_id: str, when: datetime) -> None: ...
+
+
+class StartupService(Protocol):
+    """Start with Windows (see ``core.startup``). Methods raise OSError."""
+
+    def enabled(self) -> bool:
+        """True when the app starts at sign-in (and Task Manager hasn't turned it off)."""
+        ...
+
+    def set_enabled(self, on: bool) -> None: ...

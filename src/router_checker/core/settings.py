@@ -65,7 +65,6 @@ class Settings:
     alert_cooldown_min: int = DEFAULT_COOLDOWN_MIN
     notifications_enabled: bool = True
     quiet_hours: QuietHours = field(default_factory=QuietHours)
-    start_with_windows: bool = False
     scheduled_test_all: bool = False
     test_all_interval_h: int = DEFAULT_TEST_ALL_INTERVAL_H
     auto_switch: bool = False
@@ -170,7 +169,6 @@ def settings_to_json(s: Settings) -> dict[str, Any]:
             "start": format_hhmm(s.quiet_hours.start),
             "end": format_hhmm(s.quiet_hours.end),
         },
-        "start_with_windows": s.start_with_windows,
         "scheduled_test_all": s.scheduled_test_all,
         "test_all_interval_h": s.test_all_interval_h,
         "auto_switch": s.auto_switch,
@@ -199,7 +197,6 @@ def settings_from_json(data: dict[str, Any]) -> Settings:
             kwargs[key] = int(data[key])
     for key in (
         "notifications_enabled",
-        "start_with_windows",
         "scheduled_test_all",
         "auto_switch",
         "check_on_network_change",

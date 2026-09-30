@@ -134,6 +134,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     from router_checker.platform_windows.idle import WindowsIdleMonitor
     from router_checker.platform_windows.netinfo import WindowsNetworkInfoService
     from router_checker.platform_windows.netwatch import RouteChangeWatcher
+    from router_checker.platform_windows.startup import WindowsStartup, is_built
     from router_checker.platform_windows.wlan import WindowsWifiService
     from router_checker.ui.controller import AppController, Services
     from router_checker.ui.main_window import MainWindow
@@ -144,6 +145,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     settings, warning = load_or_reset(settings_path)
     store = SqliteHistoryStore(data_dir / "history.db")
     wifi = WindowsWifiService()
+    startup = WindowsStartup()
     services = Services(
         wifi=wifi,
         ping=WindowsPingService(),
@@ -153,7 +155,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         watcher=RouteChangeWatcher(),
         switcher=wifi,
         idle=WindowsIdleMonitor(),
+        startup=startup,
     )
+    if is_built():
+        try:  # the exe moved or was installed elsewhere: start this copy at sign-in
+            if startup.update_command():
+                log.info("start with Windows now runs %s", startup.command)
+        except OSError:
+            log.warning("could not update the startup entry", exc_info=True)
     controller = AppController(settings, settings_path, store, services)
     window = MainWindow(controller)
     window.start_theme_listener()

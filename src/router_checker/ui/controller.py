@@ -58,6 +58,7 @@ from router_checker.core.protocols import (
     NetworkInfoService,
     PingService,
     RouterSwitcher,
+    StartupService,
     WifiService,
 )
 from router_checker.core.scheduler import effective_interval, scheduled_test_all_due
@@ -102,6 +103,7 @@ class Services:
     watcher: NetworkChangeWatcher | None = None
     switcher: RouterSwitcher | None = None  # Test all and the Switch button
     idle: IdleMonitor | None = None  # scheduled Test all waits for the user to be away
+    startup: StartupService | None = None  # Start with Windows
 
 
 @dataclass(frozen=True, slots=True)
@@ -312,6 +314,34 @@ class AppController(QObject):
     @property
     def can_switch(self) -> bool:
         return self._runner is not None
+
+    @property
+    def can_start_with_windows(self) -> bool:
+        return self._services.startup is not None
+
+    def starts_with_windows(self) -> bool:
+        """Read from Windows each time: Task Manager can turn it off too."""
+        startup = self._services.startup
+        if startup is None:
+            return False
+        try:
+            return startup.enabled()
+        except OSError:
+            log.warning("could not read the startup entry", exc_info=True)
+            return False
+
+    def set_start_with_windows(self, on: bool) -> str | None:
+        """Turn start with Windows on or off; an error message if Windows refused."""
+        startup = self._services.startup
+        if startup is None:
+            return "Not available in this copy of the app."
+        try:
+            startup.set_enabled(on)
+        except OSError as exc:
+            log.warning("could not change the startup entry", exc_info=True)
+            return f"Windows didn't allow the change ({exc.strerror or exc})."
+        log.info("start with Windows %s", "on" if on else "off")
+        return None
 
     @property
     def run_state(self) -> RunState | None:

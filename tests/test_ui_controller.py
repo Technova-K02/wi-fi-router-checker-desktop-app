@@ -15,6 +15,7 @@ from fakes import (
     ZTE_BSSID,
     ZTE_LAN,
     FakeIdle,
+    FakeStartup,
     FakeWatcher,
     gateway_info,
     network_parts,
@@ -48,6 +49,7 @@ def make(tmp_path):
             watcher=FakeWatcher(),
             switcher=parts["switcher"],
             idle=parts.get("idle", FakeIdle()),
+            startup=parts.get("startup"),
         )
         settings = settings or Settings(pings_per_target=4, routers=sample_routers())
         controller = AppController(
@@ -566,3 +568,22 @@ def test_nothing_switches_while_it_is_off(qtbot, make) -> None:
                 controller.check_now()
     assert controller.auto_switch_text is None
     assert parts["switcher"].calls == ["connect Neighbor", "connect ZTE-Home"]  # Test all only
+
+
+# --- start with Windows ---------------------------------------------------------------------
+
+
+def test_start_with_windows_goes_through_windows(make) -> None:
+    controller, _, _ = make()
+    assert not controller.can_start_with_windows  # no startup service: the card is hidden
+    assert not controller.starts_with_windows()
+    startup = FakeStartup()
+    controller, _, _ = make(startup=startup)
+    assert controller.can_start_with_windows
+    assert controller.set_start_with_windows(True) is None
+    assert startup.on and controller.starts_with_windows()
+    startup.fail = True
+    assert controller.set_start_with_windows(False) == (
+        "Windows didn't allow the change (Access is denied)."
+    )
+    assert controller.starts_with_windows()

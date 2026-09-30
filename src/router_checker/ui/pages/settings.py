@@ -182,6 +182,9 @@ class SettingsPage(Page):
         self.interval.currentIndexChanged.connect(lambda _i: self._apply())
         self.network_change = SwitchButton()
         self.network_change.checkedChanged.connect(lambda _c: self._apply())
+        self.startup = SwitchButton()
+        self.startup.setAccessibleName("Start with Windows")
+        self.startup.checkedChanged.connect(self._set_startup)
         self.test_all_interval = ComboBox()
         for hours in TEST_ALL_INTERVAL_CHOICES_H:
             self.test_all_interval.addItem(
@@ -216,6 +219,14 @@ class SettingsPage(Page):
                 self.network_change,
             )
         )
+        self.startup_card = _card(
+            FIF.POWER_BUTTON,
+            "Start with Windows",
+            "Open in the tray when you sign in, so checks keep running.",
+            self.startup,
+        )
+        self.startup_card.setVisible(controller.can_start_with_windows)
+        monitoring.addSettingCard(self.startup_card)
         self.test_all_card = _card(
             FIF.DATE_TIME,
             "Scheduled Test all",
@@ -393,6 +404,7 @@ class SettingsPage(Page):
         controller.settingsChanged.connect(self._load)
         controller.locationStatus.connect(self._show_location)
         self._load(controller.settings)
+        self._show_startup()
 
     def _quiet_times(self) -> QWidget:
         row = QWidget()
@@ -409,6 +421,7 @@ class SettingsPage(Page):
 
     def showEvent(self, event) -> None:
         super().showEvent(event)
+        self._show_startup()
         self._probe_location()
         self.notificationStatusRequested.emit()
 
@@ -455,6 +468,21 @@ class SettingsPage(Page):
             "Export failed", str(exc), duration=8000,
             position=InfoBarPosition.TOP, parent=self.window(),
         )  # fmt: skip
+
+    def _show_startup(self) -> None:
+        """Windows holds this setting (Task Manager can change it too), not settings.json."""
+        self.startup.blockSignals(True)
+        self.startup.setChecked(self.controller.starts_with_windows())
+        self.startup.blockSignals(False)
+
+    def _set_startup(self, on: bool) -> None:
+        error = self.controller.set_start_with_windows(on)
+        if error is not None:
+            InfoBar.error(
+                "Couldn't change Start with Windows", error, duration=8000,
+                position=InfoBarPosition.TOP, parent=self.window(),
+            )  # fmt: skip
+        self._show_startup()
 
     def _probe_location(self) -> None:
         self.location_card.setContent("Checking…")

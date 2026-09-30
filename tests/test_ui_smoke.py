@@ -7,7 +7,7 @@ from PySide6.QtCore import Qt, QTime, QTimer
 from PySide6.QtGui import QAction, QKeySequence, QShortcut
 from qfluentwidgets import InfoBar, PushButton, Theme, setTheme
 
-from fakes import GW, FakeWatcher, gateway_info, network_parts, sample_routers
+from fakes import GW, FakeStartup, FakeWatcher, gateway_info, network_parts, sample_routers
 from router_checker.core.models import Recommendation, Router, Score, WifiConnection
 from router_checker.core.presentation import StatusLevel
 from router_checker.core.quiet_hours import QuietHours
@@ -28,8 +28,9 @@ def app_parts(qtbot, tmp_path):
     parts = network_parts()
     services = Services(
         parts["wifi"], parts["ping"], parts["dns"], parts["netinfo"], parts["clock"],
-        FakeWatcher(), parts["switcher"],
+        FakeWatcher(), parts["switcher"], startup=FakeStartup(),
     )  # fmt: skip
+    parts["startup"] = services.startup
     settings = Settings(pings_per_target=4, routers=sample_routers(), first_run_done=True)
     controller = AppController(
         settings, tmp_path / "settings.json", parts["store"], services,
@@ -352,3 +353,19 @@ def test_automatic_switching_setting_and_dashboard_line(qtbot, app_parts) -> Non
     page.auto_switch.setChecked(False)
     window.dashboard._tick()
     assert line.isHidden()
+
+
+def test_the_start_with_windows_switch_shows_what_windows_has(qtbot, app_parts) -> None:
+    _, window, parts = app_parts
+    page, startup = window.settings_page, parts["startup"]
+    assert not page.startup_card.isHidden()
+    assert not page.startup.isChecked()
+    page.startup.setChecked(True)
+    assert startup.on
+    startup.on = False  # turned off in Task Manager
+    page._show_startup()  # what opening the page does
+    assert not page.startup.isChecked()
+    startup.fail = True
+    page.startup.setChecked(True)
+    assert not startup.on
+    assert not page.startup.isChecked()  # Windows refused, so the switch goes back

@@ -196,6 +196,22 @@ class FakeIdle:
 
 
 @dataclass
+class FakeStartup:
+    """Start with Windows; ``fail`` makes Windows refuse the change."""
+
+    on: bool = False
+    fail: bool = False
+
+    def enabled(self) -> bool:
+        return self.on
+
+    def set_enabled(self, on: bool) -> None:
+        if self.fail:
+            raise PermissionError(5, "Access is denied")
+        self.on = on
+
+
+@dataclass
 class FakeNotifier:
     alerts: list[Alert] = field(default_factory=list)
 
