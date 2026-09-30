@@ -58,6 +58,10 @@ LOCATION_BLOCKER = (
     "Test all needs location access. Without it, Windows doesn't tell which Wi-Fi "
     "network you're on, so Router Checker couldn't switch back afterwards."
 )
+ON_ETHERNET = (
+    "You're on Ethernet, so your internet goes over the cable: switching Wi-Fi "
+    "wouldn't change it. Test all and switching are off until you're back on Wi-Fi."
+)
 _WINDOWS_ERRORS = (LocationPermissionError, WifiUnavailableError, OSError)
 
 # Event kinds in the history.

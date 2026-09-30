@@ -130,7 +130,9 @@ class CheckEngine:
 
     # --- full test ----------------------------------------------------------
 
-    def _test_target(self, target: str, stop: threading.Event | None) -> TargetResult:
+    def _test_target(
+        self, target: str, stop: threading.Event | None, source: str | None = None
+    ) -> TargetResult:
         s = self._settings
         if stop is not None and stop.is_set():
             return TargetResult(target, None, None, None)  # discarded: full_test raises
@@ -145,8 +147,9 @@ class CheckEngine:
             dns, address = None, target
         try:
             samples = self._ping.ping(
-                address, s.pings_per_target, s.ping_timeout_ms, s.ping_spacing_ms, stop=stop
-            )
+                address, s.pings_per_target, s.ping_timeout_ms, s.ping_spacing_ms,
+                stop=stop, source=source,
+            )  # fmt: skip
         except (OSError, ValueError):  # e.g. an address the ping service can't handle
             samples = [None] * s.pings_per_target
         return TargetResult(target, address, summarize(samples), dns)
@@ -160,12 +163,18 @@ class CheckEngine:
         timestamp: datetime | None = None,
         stop: threading.Event | None = None,
     ) -> FullTestResult:
-        """Ping the gateway and every target at the same time.
+        """Ping the gateway and every target at the same time, all sent from the
+        checked adapter (so a cable or a VPN doesn't carry the pings instead).
+
+        With a VPN on, the targets are pinged past it, straight through the router.
+        If none of them answers (many VPNs block that), they're pinged again through
+        the VPN, so a blocked ping doesn't look like an internet provider problem.
 
         Raises CheckCancelled if ``stop`` was set meanwhile (the pings end early then).
         """
         s = self._settings
         now = timestamp or self._clock.now()
+        source = gateway.local_ip
         with ThreadPoolExecutor(max_workers=1 + len(s.targets)) as pool:
             gw_future = pool.submit(
                 self._ping.ping,
@@ -174,10 +183,17 @@ class CheckEngine:
                 s.ping_timeout_ms,
                 s.ping_spacing_ms,
                 stop=stop,
+                source=source,
             )
-            target_futures = [pool.submit(self._test_target, t, stop) for t in s.targets]
+            target_futures = [pool.submit(self._test_target, t, stop, source) for t in s.targets]
             gateway_ping = summarize(gw_future.result())
             targets = tuple(f.result() for f in target_futures)
+            via_vpn = False
+            if gateway.vpn and targets and all(t.failed for t in targets):
+                _raise_if_stopped(stop)
+                again = tuple(pool.map(lambda t: self._test_target(t, stop), s.targets))
+                if not all(t.failed for t in again):
+                    targets, via_vpn = again, True
         _raise_if_stopped(stop)
         return FullTestResult(
             timestamp=now,
@@ -189,6 +205,7 @@ class CheckEngine:
             targets=targets,
             rssi=rssi,
             signal_quality=connection.signal_quality if connection else None,
+            via_vpn=via_vpn,
         )
 
     def test_other(
@@ -239,12 +256,16 @@ class CheckEngine:
         location_allowed = True
         wifi_error: str | None = None
 
-        gateway = self._netinfo.wifi_gateway()
+        gateway = self._netinfo.gateway(s.connection)
+        wired = gateway is not None and gateway.wired
 
+        # On a cable the Wi-Fi connection (if any) isn't the one being checked, but
+        # a scan still shows the other routers.
         connection: WifiConnection | None = None
         scan: list[ScanEntry] | None = None
         try:
-            connection = self._wifi.current_connection()
+            if not wired:
+                connection = self._wifi.current_connection()
             scan = self._wifi.scan(stop=stop)
         except LocationPermissionError:
             location_allowed = False
@@ -312,7 +333,8 @@ class CheckEngine:
                 self._store.add_hourly(router.id, now, busy_value, current_score)
         self._store.add_scores(now, [(st.router.id, st.score) for st in statuses if st.score])
 
-        recommendation = recommend(scored, current.id if current else None, now)
+        # On a cable, switching Wi-Fi wouldn't change your connection: no advice.
+        recommendation = None if wired else recommend(scored, current.id if current else None, now)
         if recommendation is not None:
             for st in statuses:
                 st.recommended = st.router.id == recommendation.router_id

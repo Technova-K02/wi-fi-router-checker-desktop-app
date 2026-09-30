@@ -37,6 +37,8 @@ from router_checker.core.models import (
     BusyLevel,
     Busyness,
     InstabilityReason,
+    LinkChoice,
+    LinkKind,
     Recommendation,
     Router,
     RouterState,
@@ -92,6 +94,13 @@ class Status:
         return f"{self.title}: {self.detail}" if self.detail else self.title
 
 
+NOT_CONNECTED = {
+    LinkChoice.AUTO: "No Wi-Fi or Ethernet connection to a router.",
+    LinkChoice.WIFI: "Wi-Fi isn't connected. Settings > Connection is set to Wi-Fi only.",
+    LinkChoice.ETHERNET: "No cable is connected. Settings > Connection is set to Ethernet only.",
+}
+
+
 def overall_status(report: CycleReport | None, failure: str | None = None) -> Status:
     """Status of the connection right now (tray icon, flyout, dashboard)."""
     if failure is not None:
@@ -100,7 +109,9 @@ def overall_status(report: CycleReport | None, failure: str | None = None) -> St
         return Status(StatusLevel.UNKNOWN, "Waiting for the first check")
     record = report.record
     if report.gateway is None or record is None:
-        return Status(StatusLevel.UNKNOWN, "Not connected", "The Wi-Fi adapter has no gateway.")
+        return Status(
+            StatusLevel.UNKNOWN, "Not connected", NOT_CONNECTED[report.settings.connection]
+        )
     if report.match.router is None:
         ssid = report.connection.ssid if report.connection else ""
         name = f'"{ssid}"' if ssid else "This network"
@@ -312,6 +323,8 @@ class CurrentMetrics:
     loss_pct: float | None
     rssi: int | None
     signal_quality: int | None
+    wired: bool = False
+    via_vpn: bool = False  # internet numbers include the VPN
 
 
 def current_metrics(report: CycleReport | None) -> CurrentMetrics | None:
@@ -330,7 +343,23 @@ def current_metrics(report: CycleReport | None) -> CurrentMetrics | None:
         loss_pct=rec.internet_loss_pct,
         rssi=test.rssi,
         signal_quality=test.signal_quality,
+        wired=rec.link is LinkKind.ETHERNET,
+        via_vpn=rec.via_vpn,
     )
+
+
+def vpn_text(report: CycleReport | None) -> str | None:
+    """ "VPN on", when a VPN carries the internet traffic; the router is checked past it."""
+    if report is None or report.gateway is None or not report.gateway.vpn:
+        return None
+    if report.record is not None and report.record.via_vpn:
+        return "VPN on, internet measured through it"
+    return "VPN on"
+
+
+def no_recommendation_text(report: CycleReport | None) -> str:
+    wired = report is not None and report.gateway is not None and report.gateway.wired
+    return "Not while on Ethernet" if wired else "None right now"
 
 
 def targets_text(report: CycleReport | None) -> str:
@@ -360,7 +389,9 @@ def tray_tooltip(
 ) -> str:
     lines = ["Router Checker"]
     router = report.match.router if report else None
-    lines.append(f"{router.name}: {status.title}" if router else status.title)
+    wired = report is not None and report.gateway is not None and report.gateway.wired
+    name = f"{router.name} (Ethernet)" if router and wired else router.name if router else ""
+    lines.append(f"{name}: {status.title}" if router else status.title)
     metrics = current_metrics(report)
     if metrics is not None and router is not None:
         current = report.current if report else None

@@ -313,7 +313,7 @@ def test_restoring_is_tried_twice(parts, tmp_path) -> None:
 
 def test_off_wifi_before_means_off_wifi_after(parts, tmp_path) -> None:
     parts["wifi"].connection = None
-    parts["netinfo"].gateway = None
+    parts["netinfo"].wifi = None
     routers = sample_routers()
     runner, _, _ = runner_for(parts, routers, tmp_path)
     plan = plan_for(parts, routers)

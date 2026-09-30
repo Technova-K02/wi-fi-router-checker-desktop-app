@@ -5,15 +5,18 @@ from datetime import timedelta
 import pytest
 
 from fakes import (
+    CABLE_IP,
     GW,
     NB_BSSID,
     NB_GW,
     NB_LAN,
     T0,
+    WIFI_IP,
     ZTE_BSSID,
     ZTE_LAN,
     FakeNetInfo,
     FakeWifi,
+    cable_gateway,
     mac,
     make_engine,
     neighbor_connection,
@@ -24,6 +27,8 @@ from router_checker.core.matching import MatchMethod
 from router_checker.core.models import (
     AlertKind,
     BusyLevel,
+    LinkChoice,
+    LinkKind,
     Router,
     RouterState,
     Verdict,
@@ -194,7 +199,7 @@ def test_confirmed_and_recovering_flags(routers) -> None:
 
 def test_target_the_ping_service_rejects_counts_as_lost(routers) -> None:
     class PickyPing:
-        def ping(self, address, count, timeout_ms, spacing_ms, stop=None):
+        def ping(self, address, count, timeout_ms, spacing_ms, stop=None, source=None):
             if address == "8.8.8.8":
                 raise OSError("unsupported address")
             return [2.0] * count
@@ -267,3 +272,98 @@ def test_testing_another_router_can_be_stopped(routers) -> None:
     with pytest.raises(CheckCancelled):
         engine.test_other(routers[1], *neighbor_connection(), stop=stop)
     assert parts["store"].recent_checks(5) == [] and parts["store"].events(None, 5) == []
+
+
+# --- Ethernet and VPN ---------------------------------------------------------------------
+
+
+def test_on_a_cable_the_router_is_found_by_its_lan_mac(routers) -> None:
+    engine, parts = make(Settings(pings_per_target=4, routers=routers))
+    parts["netinfo"].cable = cable_gateway()  # Wi-Fi is connected too
+    report = engine.run_cycle()
+    assert report.gateway.wired
+    assert report.connection is None  # the Wi-Fi connection isn't what's checked
+    assert report.match.router.id == "zte"
+    assert report.match.method is MatchMethod.GATEWAY_MAC
+    assert report.match.macs_to_link == ()  # no Wi-Fi BSSID to learn over a cable
+    record = report.record
+    assert (record.link, record.ssid, record.rssi, record.signal_quality) == (
+        LinkKind.ETHERNET, None, None, None
+    )  # fmt: skip
+    assert record.verdict is Verdict.OK and record.score is not None  # scored without signal
+    assert set(parts["ping"].sources) == {CABLE_IP}  # every ping leaves through the cable
+    by_id = {s.router.id: s for s in report.statuses}
+    assert by_id["zte"].state is RouterState.ONLINE
+    assert by_id["nb"].state is RouterState.VISIBLE  # the Wi-Fi scan still sees the others
+
+
+def test_on_wifi_the_pings_leave_through_wifi(routers) -> None:
+    engine, parts = make(Settings(pings_per_target=4, routers=routers))
+    report = engine.run_cycle()
+    assert report.record.link is LinkKind.WIFI
+    assert set(parts["ping"].sources) == {WIFI_IP}
+
+
+def test_the_connection_setting_is_passed_on(routers) -> None:
+    engine, parts = make(Settings(routers=routers, connection=LinkChoice.WIFI))
+    parts["netinfo"].cable = cable_gateway()
+    report = engine.run_cycle()
+    assert parts["netinfo"].choices == [LinkChoice.WIFI]
+    assert report.record.link is LinkKind.WIFI
+    assert report.connection is not None
+
+
+def test_a_pc_without_wifi_checks_its_cable(routers) -> None:
+    wifi = FakeWifi(missing=True)
+    engine, _ = make(
+        Settings(pings_per_target=4, routers=routers),
+        wifi=wifi, netinfo=FakeNetInfo(cable=cable_gateway()),
+    )  # fmt: skip
+    report = engine.run_cycle()
+    assert report.wifi_error == "No Wi-Fi adapter found."
+    assert report.scan is None
+    assert report.match.router.id == "zte"
+    assert report.record.link is LinkKind.ETHERNET and report.record.verdict is Verdict.OK
+
+
+TARGETS = ("1.1.1.1", "8.8.8.8", "142.250.0.1")
+
+
+def test_with_a_vpn_the_router_is_checked_past_it(routers) -> None:
+    engine, parts = make(Settings(pings_per_target=4, routers=routers))
+    parts["netinfo"].vpn = True
+    report = engine.run_cycle()
+    assert report.gateway.vpn
+    assert report.record.verdict is Verdict.OK
+    assert not report.record.via_vpn
+    assert set(parts["ping"].sources) == {WIFI_IP}
+
+
+def test_a_vpn_that_blocks_other_traffic_isnt_an_internet_problem(routers) -> None:
+    engine, parts = make(Settings(pings_per_target=4, routers=routers))
+    parts["netinfo"].vpn = True
+    parts["ping"].blocked = {(WIFI_IP, t) for t in TARGETS}  # the VPN's kill switch
+    report = engine.run_cycle()
+    assert report.record.verdict is Verdict.OK
+    assert report.record.via_vpn
+    assert report.record.internet_loss_pct == 0
+    # Tried past the VPN first, then through it.
+    assert parts["ping"].sources.count(None) == len(TARGETS)
+
+
+def test_without_a_vpn_failing_targets_are_an_internet_problem(routers) -> None:
+    engine, parts = make(Settings(pings_per_target=4, routers=routers))
+    parts["ping"].blocked = {(WIFI_IP, t) for t in TARGETS}
+    report = engine.run_cycle()
+    assert report.record.verdict is Verdict.INTERNET_DOWN
+    assert not report.record.via_vpn
+    assert None not in parts["ping"].sources  # no second try
+
+
+def test_with_a_vpn_nothing_answering_at_all_is_still_an_internet_problem(routers) -> None:
+    engine, parts = make(Settings(pings_per_target=4, routers=routers))
+    parts["netinfo"].vpn = True
+    parts["ping"].blocked = {(src, t) for t in TARGETS for src in (WIFI_IP, None)}
+    report = engine.run_cycle()
+    assert report.record.verdict is Verdict.INTERNET_DOWN
+    assert not report.record.via_vpn

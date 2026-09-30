@@ -1,3 +1,4 @@
+import sqlite3
 from datetime import timedelta
 
 import pytest
@@ -9,6 +10,7 @@ from router_checker.core.models import (
     Busyness,
     Event,
     InstabilityReason,
+    LinkKind,
     ScanObservation,
     Score,
     ScorePoint,
@@ -157,3 +159,41 @@ def test_last_event_of_a_kind(store) -> None:
     store.add_event(Event(T0 + timedelta(minutes=2), None, "test_all", "second"))
     store.add_event(Event(T0 + timedelta(minutes=3), "r1", "unstable", "later"))
     assert store.last_event("test_all").message == "second"
+
+
+def test_the_connection_type_is_kept(store) -> None:
+    store.add_check(record(link=LinkKind.ETHERNET, via_vpn=True, rssi=None))
+    store.add_check(record(timestamp=T0 + timedelta(minutes=5)))
+    wired, wifi = store.checks("r1", T0)
+    assert (wired.link, wired.via_vpn) == (LinkKind.ETHERNET, True)
+    assert (wifi.link, wifi.via_vpn) == (LinkKind.WIFI, False)
+
+
+def test_an_older_history_file_gets_the_new_columns(tmp_path) -> None:
+    path = tmp_path / "history.db"
+    old = sqlite3.connect(path)  # the checks table as version 2 created it
+    old.execute(
+        """CREATE TABLE checks (id INTEGER PRIMARY KEY, ts REAL NOT NULL, router_id TEXT,
+        ssid TEXT, bssid TEXT, verdict TEXT NOT NULL, reasons TEXT NOT NULL,
+        gateway_loss_pct REAL, gateway_avg_ms REAL, gateway_p95_ms REAL,
+        gateway_jitter_ms REAL, gateway_silent INTEGER NOT NULL, internet_loss_pct REAL,
+        internet_latency_ms REAL, internet_jitter_ms REAL, dns_ms REAL, rssi INTEGER,
+        signal_quality INTEGER, score REAL)"""
+    )
+    old.execute(
+        "INSERT INTO checks (ts, router_id, verdict, reasons, gateway_silent) "
+        "VALUES (?, 'r1', 'OK', '[]', 0)",
+        (T0.timestamp(),),
+    )
+    old.execute("PRAGMA user_version = 2")
+    old.commit()
+    old.close()
+    store = SqliteHistoryStore(path)
+    try:
+        (before,) = store.checks("r1", T0)
+        assert (before.link, before.via_vpn) == (LinkKind.WIFI, False)  # all were Wi-Fi
+        store.add_check(record(timestamp=T0 + timedelta(minutes=1), link=LinkKind.ETHERNET))
+        assert store.checks("r1", T0)[-1].link is LinkKind.ETHERNET
+    finally:
+        store.close()
+    SqliteHistoryStore(path).close()  # opening it again changes nothing

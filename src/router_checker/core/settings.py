@@ -23,7 +23,7 @@ from router_checker.core.alerts import (
     Thresholds,
 )
 from router_checker.core.mac import MacAddress
-from router_checker.core.models import Router
+from router_checker.core.models import LinkChoice, Router
 from router_checker.core.quiet_hours import QuietHours, format_hhmm, parse_hhmm
 from router_checker.core.scheduler import (
     DEFAULT_INTERVAL_MIN,
@@ -68,6 +68,7 @@ class Settings:
     scheduled_test_all: bool = False
     test_all_interval_h: int = DEFAULT_TEST_ALL_INTERVAL_H
     auto_switch: bool = False
+    connection: LinkChoice = LinkChoice.AUTO  # which adapter to check
     retention_days: int = DEFAULT_RETENTION_DAYS
     check_on_network_change: bool = True
     first_run_done: bool = False
@@ -172,6 +173,7 @@ def settings_to_json(s: Settings) -> dict[str, Any]:
         "scheduled_test_all": s.scheduled_test_all,
         "test_all_interval_h": s.test_all_interval_h,
         "auto_switch": s.auto_switch,
+        "connection": s.connection.value,
         "retention_days": s.retention_days,
         "check_on_network_change": s.check_on_network_change,
         "first_run_done": s.first_run_done,
@@ -204,6 +206,8 @@ def settings_from_json(data: dict[str, Any]) -> Settings:
     ):
         if key in data:
             kwargs[key] = bool(data[key])
+    if data.get("connection") in {c.value for c in LinkChoice}:
+        kwargs["connection"] = LinkChoice(data["connection"])
     if "targets" in data:
         kwargs["targets"] = tuple(str(t).strip() for t in data["targets"])
     if "thresholds" in data:

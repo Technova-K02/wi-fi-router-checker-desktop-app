@@ -4,7 +4,7 @@ from datetime import timedelta, timezone
 
 from fakes import T0, record
 from router_checker.core.export import HEADER, check_row, safe_text, write_checks_csv
-from router_checker.core.models import InstabilityReason, Verdict
+from router_checker.core.models import InstabilityReason, LinkKind, Verdict
 
 PLUS_2 = timezone(timedelta(hours=2))
 NAMES = {"r1": "Home"}
@@ -16,6 +16,7 @@ def test_row_uses_local_time_and_plain_numbers() -> None:
     assert cells["Time"] == "2026-09-29 14:00:00"
     assert cells["UTC offset"] == "+02:00"
     assert cells["Router"] == "Home" and cells["Wi-Fi name"] == "Net"
+    assert cells["Connection"] == "Wi-Fi" and cells["Internet through VPN"] == "no"
     assert cells["Result"] == "OK" and cells["Reasons"] == ""
     assert cells["Gateway average (ms)"] == "2.0"
     assert cells["Gateway answers ping"] == "yes"
@@ -56,8 +57,15 @@ def test_write_csv() -> None:
     records = [record(), record(timestamp=T0 + timedelta(minutes=5), ssid='Say "hi", ok')]
     assert write_checks_csv(out, records, NAMES, PLUS_2) == 2
     text = out.getvalue()
-    assert text.startswith("Time,UTC offset,Router,Wi-Fi name,")
+    assert text.startswith("Time,UTC offset,Router,Connection,Wi-Fi name,")
     assert text.count("\r\n") == 3  # header and two rows, Windows line ends
     rows = list(csv.reader(io.StringIO(text)))
     assert rows[0] == list(HEADER)
-    assert rows[2][3] == 'Say "hi", ok'  # quoting survives a round trip
+    assert rows[2][HEADER.index("Wi-Fi name")] == 'Say "hi", ok'  # quoting survives
+
+
+def test_a_wired_check_says_ethernet() -> None:
+    wired = record(link=LinkKind.ETHERNET, ssid=None, rssi=None, signal_quality=None, via_vpn=True)
+    cells = dict(zip(HEADER, check_row(wired, NAMES, PLUS_2), strict=True))
+    assert cells["Connection"] == "Ethernet" and cells["Wi-Fi name"] == ""
+    assert cells["Signal (dBm)"] == "" and cells["Internet through VPN"] == "yes"

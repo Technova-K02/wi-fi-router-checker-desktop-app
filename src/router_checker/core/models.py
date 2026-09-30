@@ -26,6 +26,25 @@ class Band(StrEnum):
     UNKNOWN = "unknown"
 
 
+class LinkKind(StrEnum):
+    """How the PC reaches the router."""
+
+    WIFI = "wifi"
+    ETHERNET = "ethernet"
+
+    @property
+    def label(self) -> str:
+        return "Wi-Fi" if self is LinkKind.WIFI else "Ethernet"
+
+
+class LinkChoice(StrEnum):
+    """Which connection to check (Settings > Connection)."""
+
+    AUTO = "auto"  # the one Windows uses for the internet
+    WIFI = "wifi"
+    ETHERNET = "ethernet"
+
+
 class RouterState(StrEnum):
     ONLINE = "Online"  # connected and the full test got answers
     VISIBLE = "Visible"  # in range, not tested
@@ -183,13 +202,20 @@ class SavedNetwork:
 
 @dataclass(frozen=True, slots=True)
 class GatewayInfo:
-    """Default gateway of the Wi-Fi adapter (works without location permission)."""
+    """The adapter being checked and its default gateway (works without location
+    permission). Pings leave through this adapter: they're sent from ``local_ip``."""
 
     interface_id: str
     interface_name: str
     local_ip: str | None
     gateway_ip: str
     gateway_mac: MacAddress | None
+    kind: LinkKind = LinkKind.WIFI
+    vpn: bool = False  # a VPN (or another adapter) carries the internet traffic
+
+    @property
+    def wired(self) -> bool:
+        return self.kind is LinkKind.ETHERNET
 
 
 @dataclass(frozen=True, slots=True)
@@ -221,6 +247,7 @@ class FullTestResult:
     targets: tuple[TargetResult, ...]
     rssi: int | None
     signal_quality: int | None
+    via_vpn: bool = False  # the internet targets only answered through the VPN
 
 
 @dataclass(frozen=True, slots=True)
@@ -245,6 +272,8 @@ class CheckRecord:
     rssi: int | None
     signal_quality: int | None
     score: float | None = None
+    link: LinkKind = LinkKind.WIFI
+    via_vpn: bool = False  # internet numbers were measured through the VPN
 
     @property
     def unstable(self) -> bool:

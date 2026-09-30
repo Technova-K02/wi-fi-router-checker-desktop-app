@@ -14,7 +14,7 @@ import statistics
 from dataclasses import dataclass
 
 from router_checker.core.alerts import Thresholds, diagnose
-from router_checker.core.models import CheckRecord, FullTestResult, TargetResult
+from router_checker.core.models import CheckRecord, FullTestResult, LinkKind, TargetResult
 
 
 @dataclass(frozen=True, slots=True)
@@ -75,4 +75,6 @@ def to_record(result: FullTestResult, thresholds: Thresholds, pings_per_target: 
         dns_ms=internet.dns_ms,
         rssi=result.rssi,
         signal_quality=result.signal_quality,
+        link=result.gateway.kind if result.gateway else LinkKind.WIFI,
+        via_vpn=result.via_vpn,
     )

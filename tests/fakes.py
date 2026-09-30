@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import threading
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 
-from router_checker.core.errors import LocationPermissionError
+from router_checker.core.errors import LocationPermissionError, WifiUnavailableError
 from router_checker.core.mac import MacAddress
 from router_checker.core.models import (
     Alert,
@@ -15,6 +15,8 @@ from router_checker.core.models import (
     CheckRecord,
     DnsResult,
     GatewayInfo,
+    LinkChoice,
+    LinkKind,
     Router,
     SavedNetwork,
     ScanEntry,
@@ -82,15 +84,20 @@ class FakeWifi:
     entries: list[ScanEntry] = field(default_factory=list)
     denied: bool = False
     profiles: list[str] = field(default_factory=list)
+    missing: bool = False  # the PC has no Wi-Fi adapter
 
-    def current_connection(self) -> WifiConnection | None:
+    def _check(self) -> None:
+        if self.missing:
+            raise WifiUnavailableError("No Wi-Fi adapter found.")
         if self.denied:
             raise LocationPermissionError("denied")
+
+    def current_connection(self) -> WifiConnection | None:
+        self._check()
         return self.connection
 
     def scan(self, stop: threading.Event | None = None) -> list[ScanEntry]:
-        if self.denied:
-            raise LocationPermissionError("denied")
+        self._check()
         return list(self.entries)
 
     def saved_profiles(self) -> list[str]:
@@ -123,6 +130,8 @@ class FakePing:
 
     replies: dict[str, list[float | None]] = field(default_factory=dict)
     calls: list[str] = field(default_factory=list)
+    sources: list[str | None] = field(default_factory=list)  # the source of each call
+    blocked: set[tuple[str | None, str]] = field(default_factory=set)  # (source, address)
 
     def ping(
         self,
@@ -131,10 +140,14 @@ class FakePing:
         timeout_ms: int,
         spacing_ms: int,
         stop: threading.Event | None = None,
+        source: str | None = None,
     ) -> list[float | None]:
         self.calls.append(address)
+        self.sources.append(source)
         if stop is not None and stop.is_set():
             return []
+        if (source, address) in self.blocked:
+            return [None] * count
         series = self.replies.get(address, [None])
         return [series[i % len(series)] for i in range(count)]
 
@@ -151,10 +164,27 @@ class FakeDns:
 
 @dataclass
 class FakeNetInfo:
-    gateway: GatewayInfo | None = None
+    """``wifi`` is the Wi-Fi adapter's gateway, ``cable`` the Ethernet one's.
+    Automatic picks the cable when there is one, as Windows would; ``vpn`` says a
+    VPN carries the internet traffic."""
+
+    wifi: GatewayInfo | None = None
+    cable: GatewayInfo | None = None
+    vpn: bool = False
+    choices: list[LinkChoice] = field(default_factory=list)
+
+    def gateway(self, choice: LinkChoice = LinkChoice.AUTO) -> GatewayInfo | None:
+        self.choices.append(choice)
+        if choice is LinkChoice.WIFI:
+            found = self.wifi
+        elif choice is LinkChoice.ETHERNET:
+            found = self.cable
+        else:
+            found = self.cable or self.wifi
+        return replace(found, vpn=self.vpn) if found else None
 
     def wifi_gateway(self) -> GatewayInfo | None:
-        return self.gateway
+        return self.wifi
 
 
 @dataclass
@@ -178,13 +208,13 @@ class FakeSwitcher:
         if callable(self.on_connect):
             self.on_connect(profile_name)
         if profile_name in self.unreachable or profile_name not in self.networks:
-            self.wifi.connection, self.netinfo.gateway = None, None
+            self.wifi.connection, self.netinfo.wifi = None, None
             return
-        self.wifi.connection, self.netinfo.gateway = self.networks[profile_name]
+        self.wifi.connection, self.netinfo.wifi = self.networks[profile_name]
 
     def disconnect(self) -> None:
         self.calls.append("disconnect")
-        self.wifi.connection, self.netinfo.gateway = None, None
+        self.wifi.connection, self.netinfo.wifi = None, None
 
 
 @dataclass
@@ -220,7 +250,18 @@ class FakeNotifier:
 
 
 def gateway_info(ip: str = "192.168.1.1", gw_mac: str | None = "B0-0A-D5-9A-7B-B4") -> GatewayInfo:
-    return GatewayInfo("{GUID}", "Wi-Fi", "192.168.1.50", ip, mac(gw_mac) if gw_mac else None)
+    return GatewayInfo("{GUID}", "Wi-Fi", WIFI_IP, ip, mac(gw_mac) if gw_mac else None)
+
+
+def cable_gateway(ip: str = "192.168.1.1", gw_mac: str | None = "B0-0A-D5-9A-7B-B4") -> GatewayInfo:
+    """A cable into the ZTE (its LAN MAC), by default."""
+    return GatewayInfo(
+        "{CABLE}", "Ethernet", CABLE_IP, ip, mac(gw_mac) if gw_mac else None, LinkKind.ETHERNET
+    )
+
+
+WIFI_IP = "192.168.1.50"
+CABLE_IP = "192.168.1.60"
 
 
 # --- a small simulated network: the ZTE router plus two neighbours ------------------

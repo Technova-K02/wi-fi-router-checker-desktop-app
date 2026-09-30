@@ -16,6 +16,7 @@ from router_checker.core.models import (
     Event,
     GatewayInfo,
     HourlyAggregate,
+    LinkChoice,
     SavedNetwork,
     ScanEntry,
     ScanObservation,
@@ -55,10 +56,13 @@ class PingService(Protocol):
         timeout_ms: int,
         spacing_ms: int,
         stop: threading.Event | None = None,
+        source: str | None = None,
     ) -> list[float | None]:
         """RTT in ms per echo request, None for each lost one. ``address`` is an IP.
 
-        Once ``stop`` is set it returns early, with fewer than ``count`` results.
+        ``source`` is the local IPv4 address to send from, which picks the adapter
+        (None: wherever Windows routes it). Once ``stop`` is set it returns early,
+        with fewer than ``count`` results.
         """
         ...
 
@@ -68,6 +72,11 @@ class DnsService(Protocol):
 
 
 class NetworkInfoService(Protocol):
+    def gateway(self, choice: LinkChoice = LinkChoice.AUTO) -> GatewayInfo | None:
+        """The connection to check (see ``core.links``) and its default gateway,
+        or None if there's none."""
+        ...
+
     def wifi_gateway(self) -> GatewayInfo | None:
         """Default gateway of the connected Wi-Fi adapter, or None if not connected."""
         ...

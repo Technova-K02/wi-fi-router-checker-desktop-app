@@ -20,6 +20,7 @@ from router_checker.core.models import (
     Event,
     HourlyAggregate,
     InstabilityReason,
+    LinkKind,
     ScanEntry,
     ScanObservation,
     Score,
@@ -27,7 +28,7 @@ from router_checker.core.models import (
     Verdict,
 )
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS checks (
@@ -49,7 +50,9 @@ CREATE TABLE IF NOT EXISTS checks (
     dns_ms REAL,
     rssi INTEGER,
     signal_quality INTEGER,
-    score REAL
+    score REAL,
+    link TEXT NOT NULL DEFAULT 'wifi',
+    via_vpn INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_checks_router_ts ON checks (router_id, ts);
 
@@ -107,6 +110,12 @@ def _ts(dt: datetime) -> float:
     return dt.timestamp()
 
 
+_ADDED_CHECK_COLUMNS = (
+    ("link", "TEXT NOT NULL DEFAULT 'wifi'"),
+    ("via_vpn", "INTEGER NOT NULL DEFAULT 0"),
+)
+
+
 def _dt(ts: float) -> datetime:
     return datetime.fromtimestamp(ts, UTC)
 
@@ -131,6 +140,8 @@ def _check_from_row(row: sqlite3.Row) -> CheckRecord:
         rssi=row["rssi"],
         signal_quality=row["signal_quality"],
         score=row["score"],
+        link=LinkKind(row["link"]),
+        via_vpn=bool(row["via_vpn"]),
     )
 
 
@@ -143,7 +154,15 @@ class SqliteHistoryStore:
         self._db.row_factory = sqlite3.Row
         with self._db:
             self._db.executescript(_SCHEMA)
+            self._add_missing_columns()
             self._db.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+
+    def _add_missing_columns(self) -> None:
+        """Version 3 added the connection type; older checks were all over Wi-Fi."""
+        have = {row["name"] for row in self._db.execute("PRAGMA table_info(checks)")}
+        for name, definition in _ADDED_CHECK_COLUMNS:
+            if name not in have:
+                self._db.execute(f"ALTER TABLE checks ADD COLUMN {name} {definition}")
 
     def close(self) -> None:
         with self._lock:
@@ -157,14 +176,15 @@ class SqliteHistoryStore:
                 """INSERT INTO checks (ts, router_id, ssid, bssid, verdict, reasons,
                     gateway_loss_pct, gateway_avg_ms, gateway_p95_ms, gateway_jitter_ms,
                     gateway_silent, internet_loss_pct, internet_latency_ms, internet_jitter_ms,
-                    dns_ms, rssi, signal_quality, score)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    dns_ms, rssi, signal_quality, score, link, via_vpn)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     _ts(r.timestamp), r.router_id, r.ssid, r.bssid, r.verdict.name,
                     json.dumps([x.name for x in r.reasons]),
                     r.gateway_loss_pct, r.gateway_avg_ms, r.gateway_p95_ms, r.gateway_jitter_ms,
                     int(r.gateway_silent), r.internet_loss_pct, r.internet_latency_ms,
                     r.internet_jitter_ms, r.dns_ms, r.rssi, r.signal_quality, r.score,
+                    r.link.value, int(r.via_vpn),
                 ),
             )  # fmt: skip
 

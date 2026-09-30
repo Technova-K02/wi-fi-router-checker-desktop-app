@@ -6,7 +6,7 @@ import pytest
 
 from fakes import mac
 from router_checker.core.alerts import Thresholds
-from router_checker.core.models import Router
+from router_checker.core.models import LinkChoice, Router
 from router_checker.core.quiet_hours import QuietHours
 from router_checker.core.settings import (
     DEFAULT_TARGETS,
@@ -161,3 +161,11 @@ def test_a_file_saved_with_a_byte_order_mark_loads(tmp_path) -> None:
     path = tmp_path / "s.json"
     path.write_text(json.dumps({"interval_min": 15}), encoding="utf-8-sig")
     assert load_settings(path).interval_min == 15
+
+
+def test_the_connection_choice_is_kept_and_a_bad_one_falls_back_to_automatic() -> None:
+    assert Settings().connection is LinkChoice.AUTO
+    s = Settings(connection=LinkChoice.ETHERNET)
+    assert settings_to_json(s)["connection"] == "ethernet"
+    assert settings_from_json(settings_to_json(s)).connection is LinkChoice.ETHERNET
+    assert settings_from_json({"connection": "carrier pigeon"}).connection is LinkChoice.AUTO
