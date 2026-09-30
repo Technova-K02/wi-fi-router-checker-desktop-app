@@ -1,6 +1,9 @@
-"""Ping through the Windows ICMP API (IcmpSendEcho2), no admin rights needed.
+"""Ping through the Windows ICMP API (IcmpSendEcho2Ex), no admin rights needed.
 
-IPv4 only for now; domain targets are resolved to IPv4 addresses.
+A source address sends the echoes out of that address's adapter, so the checked
+Wi-Fi or Ethernet connection carries them even when a cable or a VPN would
+otherwise take the route. IPv4 only for now; domain targets are resolved to
+IPv4 addresses.
 """
 
 from __future__ import annotations
@@ -42,11 +45,12 @@ _iphlp.IcmpCreateFile.argtypes = []
 _iphlp.IcmpCreateFile.restype = wintypes.HANDLE
 _iphlp.IcmpCloseHandle.argtypes = [wintypes.HANDLE]
 _iphlp.IcmpCloseHandle.restype = wintypes.BOOL
-_iphlp.IcmpSendEcho2.argtypes = [
-    wintypes.HANDLE, wintypes.HANDLE, c_void_p, c_void_p, wintypes.ULONG, c_void_p,
-    wintypes.WORD, POINTER(IP_OPTION_INFORMATION), c_void_p, wintypes.DWORD, wintypes.DWORD,
+_iphlp.IcmpSendEcho2Ex.argtypes = [
+    wintypes.HANDLE, wintypes.HANDLE, c_void_p, c_void_p, wintypes.ULONG, wintypes.ULONG,
+    c_void_p, wintypes.WORD, POINTER(IP_OPTION_INFORMATION), c_void_p, wintypes.DWORD,
+    wintypes.DWORD,
 ]  # fmt: skip
-_iphlp.IcmpSendEcho2.restype = wintypes.DWORD
+_iphlp.IcmpSendEcho2Ex.restype = wintypes.DWORD
 
 
 def ipv4_to_ipaddr(address: str) -> int:
@@ -62,8 +66,10 @@ class WindowsPingService:
         timeout_ms: int,
         spacing_ms: int,
         stop: threading.Event | None = None,
+        source: str | None = None,
     ) -> list[float | None]:
         dest = ipv4_to_ipaddr(address)
+        src = ipv4_to_ipaddr(source) if source else 0  # 0: wherever Windows routes it
         if stop is None:
             stop = threading.Event()  # never set
         handle = _iphlp.IcmpCreateFile()
@@ -78,8 +84,8 @@ class WindowsPingService:
                 # The pause between echoes doubles as the check for "stop now".
                 if stop.wait(spacing_ms / 1000 if i else 0):
                     break
-                n = _iphlp.IcmpSendEcho2(
-                    handle, None, None, None, dest, payload, len(PAYLOAD), None,
+                n = _iphlp.IcmpSendEcho2Ex(
+                    handle, None, None, None, src, dest, payload, len(PAYLOAD), None,
                     reply, reply_size, timeout_ms,
                 )  # fmt: skip
                 if n == 0:

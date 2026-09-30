@@ -117,7 +117,11 @@ def _ping_row(label: str, stats: PingStats | None, dns_ms: float | None = None) 
 
 def _gateway_line(gw: GatewayInfo) -> str:
     mac = gw.gateway_mac or "?"
-    return f"Gateway:  {gw.gateway_ip}  MAC {mac}  ({gw.interface_name}, IP {gw.local_ip})"
+    vpn = ", VPN on" if gw.vpn else ""
+    return (
+        f"Gateway:  {gw.gateway_ip}  MAC {mac}  "
+        f"({gw.kind.label} {gw.interface_name!r}, IP {gw.local_ip}{vpn})"
+    )
 
 
 def print_report(report: CycleReport) -> None:
@@ -251,18 +255,20 @@ def engine_now() -> datetime:
 
 def cmd_status(app: App, _args: argparse.Namespace) -> int:
     from router_checker.core.matching import identify_current
+    from router_checker.core.presentation import NOT_CONNECTED
     from router_checker.platform_windows.netinfo import WindowsNetworkInfoService
     from router_checker.platform_windows.wlan import WindowsWifiService
 
     settings = app.load()
-    gw = WindowsNetworkInfoService().wifi_gateway()
+    gw = WindowsNetworkInfoService().gateway(settings.connection)
     connection = None
     with WindowsWifiService() as wifi:
         try:
             adapters = wifi.interfaces()
             for guid, desc, _state in adapters:
                 print(f"Adapter:  {desc}  {guid}")
-            connection = wifi.current_connection()
+            if gw is None or not gw.wired:  # on a cable, Wi-Fi isn't what's checked
+                connection = wifi.current_connection()
             print("Location: allowed")
         except LocationPermissionError:
             print("! " + _location_hint())
@@ -275,7 +281,7 @@ def cmd_status(app: App, _args: argparse.Namespace) -> int:
     if gw:
         print(_gateway_line(gw))
     else:
-        print("Gateway:  none (Wi-Fi not connected)")
+        print(f"Gateway:  none ({NOT_CONNECTED[settings.connection]})")
     match = identify_current(settings.routers, connection, gw)
     if match.router:
         print(f"Router:   {match.router.name} (matched by {match.method})")
