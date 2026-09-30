@@ -162,6 +162,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     instance.activated.connect(window.bring_to_front)
     notifications = NotificationCenter(controller, tray, make_toaster(data_dir), window)
     notifications.openRequested.connect(window.bring_to_front)
+    notifications.switchRequested.connect(window.switch_to)
     notifications.statusChanged.connect(window.settings_page.show_notification_status)
     window.hiddenToTray.connect(notifications.notify_hidden)
     window.settings_page.testNotificationRequested.connect(notifications.send_test)

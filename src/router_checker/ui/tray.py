@@ -66,6 +66,8 @@ class TrayFlyoutView(FlyoutViewBase):
         self.when = CaptionLabel(self)
         self.check_button = PrimaryPushButton(FIF.SYNC, "Check now", self)
         self.check_button.clicked.connect(controller.check_now)
+        self.cancel_button = PushButton(FIF.CLOSE, "Cancel Test all", self)
+        self.cancel_button.clicked.connect(lambda: controller.cancel_test_all())
         open_button = PushButton(FIF.HOME, "Open", self)
         open_button.clicked.connect(on_open)
 
@@ -75,6 +77,7 @@ class TrayFlyoutView(FlyoutViewBase):
         header.addWidget(self.title, 1)
         buttons = QHBoxLayout()
         buttons.addWidget(self.check_button, 1)
+        buttons.addWidget(self.cancel_button, 1)
         buttons.addWidget(open_button, 1)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(20, 16, 20, 16)
@@ -91,6 +94,7 @@ class TrayFlyoutView(FlyoutViewBase):
             controller.checkFinished,
             controller.checkFailed,
             controller.settingsChanged,
+            controller.activityChanged,
         ):
             signal.connect(self.refresh)
         self._timer = QTimer(self)
@@ -120,12 +124,20 @@ class TrayFlyoutView(FlyoutViewBase):
         self.values["Recommended"].setText(
             recommendation_text(rec, c.settings.routers) if rec else "None right now"
         )
-        self.check_button.setEnabled(not c.is_checking)
+        state = c.run_state
+        testing = state is not None and state.kind == "test_all"
+        self.check_button.setVisible(not testing)
+        self.check_button.setEnabled(not c.is_busy)
+        self.cancel_button.setVisible(testing)
+        self.cancel_button.setEnabled(bool(state and state.can_cancel))
         self.setAccessibleName(f"{self.title.text()}. {status.detail}")
         self._tick()
 
     def _tick(self) -> None:
         c = self.controller
+        if c.activity is not None:
+            self.when.setText(c.activity)
+            return
         if c.is_checking:
             self.when.setText("Checking now…")
             return
@@ -154,6 +166,10 @@ class TrayIcon(QObject):
                 Action(FIF.SYNC, "Check now", triggered=controller.check_now),
             ]
         )
+        if controller.can_switch:
+            self.menu.addAction(
+                Action(FIF.ROTATE, "Test all now", triggered=lambda: window.test_all())
+            )
         self.menu.addSeparator()
         # Not triggered=self.exitRequested.emit: "triggered" also passes a "checked" flag.
         self.menu.addAction(
@@ -169,6 +185,7 @@ class TrayIcon(QObject):
             controller.checkFinished,
             controller.checkFailed,
             controller.settingsChanged,
+            controller.activityChanged,
         ):
             signal.connect(self.refresh)
         self.refresh()
@@ -185,7 +202,7 @@ class TrayIcon(QObject):
         report = c.last_snapshot.report if c.last_snapshot else None
         status = overall_status(report, c.last_failure)
         self.tray.setIcon(self._icons[status.level])
-        self.tray.setToolTip(tray_tooltip(report, status, c.is_checking))
+        self.tray.setToolTip(tray_tooltip(report, status, c.is_checking, c.activity))
 
     # Balloon messages: the fallback when Windows notifications (toasts) don't work.
 

@@ -1,14 +1,14 @@
 """NotificationCenter: toasts with buttons, the tray fallback and button clicks."""
 
 import threading
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC
 
 import pytest
 
 from fakes import T0, FakeWatcher, network_parts, sample_routers
 from router_checker.core.models import Alert, AlertKind, Score, Verdict
-from router_checker.core.presentation import StatusLevel
+from router_checker.core.presentation import Message, StatusLevel
 from router_checker.core.settings import Settings
 from router_checker.ui.controller import AppController, Services
 from router_checker.ui.notifications import ALERT_LIFETIME, CHECK, OPEN, NotificationCenter
@@ -56,8 +56,9 @@ class FakeTray:
 def center(qtbot):
     parts = network_parts()
     services = Services(
-        parts["wifi"], parts["ping"], parts["dns"], parts["netinfo"], parts["clock"], FakeWatcher()
-    )
+        parts["wifi"], parts["ping"], parts["dns"], parts["netinfo"], parts["clock"],
+        FakeWatcher(), parts["switcher"],
+    )  # fmt: skip
     controller = AppController(
         Settings(pings_per_target=4, routers=sample_routers()), None, parts["store"], services,
         tz=UTC,
@@ -124,3 +125,40 @@ def test_test_notification_reports_the_windows_setting(qtbot, center) -> None:
         center.send_test()
     assert toaster.shown[0]["tag"] == "test"
     assert status.args == [False]
+
+
+def test_an_unstable_alert_offers_to_switch_to_the_better_router(qtbot, center) -> None:
+    center, toaster, _ = center
+    with qtbot.waitSignal(center.controller.checkFinished, timeout=TIMEOUT):
+        center.controller.check_now()  # learns which routers it can switch to
+    center.show_alert(replace(UNSTABLE, recommended_name="Neighbor", recommended_id="nb"))
+    toast = toaster.shown[-1]
+    assert toast["buttons"] == [
+        ("Open", OPEN),
+        ("Check now", CHECK),
+        ("Switch to Neighbor", "switch:nb"),
+    ]
+    with (
+        qtbot.waitSignal(center.switchRequested, timeout=TIMEOUT) as requested,
+        qtbot.waitSignal(center.openRequested, timeout=TIMEOUT),
+    ):
+        threading.Thread(target=toast["on_action"], args=("switch:nb",)).start()
+    assert requested.args == ["nb"]
+    center.show_alert(replace(UNSTABLE, recommended_name="Gone", recommended_id="gone"))
+    assert len(toaster.shown[-1]["buttons"]) == 2  # not in range: no Switch button
+
+
+def test_only_a_failed_reconnect_is_a_notification(center) -> None:
+    center, toaster, tray = center
+    center.controller.testAllFinished.emit(
+        Message(StatusLevel.GOOD, "Test all finished", "."), False
+    )
+    assert toaster.shown == []
+    problem = Message(
+        StatusLevel.BAD, "Couldn't reconnect to “ZTE-Home”", "Connect to it.", restore_failed=True
+    )
+    center.controller.testAllFinished.emit(problem, True)
+    assert (toaster.shown[0]["tag"], toaster.shown[0]["title"]) == ("reconnect", problem.title)
+    toaster.broken = True
+    center.controller.switchFinished.emit(problem)
+    assert tray.messages[-1] == (problem.title, problem.text, StatusLevel.BAD)

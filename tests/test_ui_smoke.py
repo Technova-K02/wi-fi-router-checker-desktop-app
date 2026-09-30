@@ -5,13 +5,14 @@ from dataclasses import replace
 import pytest
 from PySide6.QtCore import Qt, QTime, QTimer
 from PySide6.QtGui import QAction, QKeySequence, QShortcut
-from qfluentwidgets import PushButton, Theme, setTheme
+from qfluentwidgets import InfoBar, PushButton, Theme, setTheme
 
 from fakes import GW, FakeWatcher, gateway_info, network_parts, sample_routers
-from router_checker.core.models import Router, WifiConnection
+from router_checker.core.models import Recommendation, Router, Score, WifiConnection
 from router_checker.core.presentation import StatusLevel
 from router_checker.core.quiet_hours import QuietHours
 from router_checker.core.settings import Settings
+from router_checker.core.switching import SwitchTiming
 from router_checker.ui.controller import AppController, Services
 from router_checker.ui.dialogs.first_run import FirstRunDialog
 from router_checker.ui.dialogs.router_dialog import RouterDialog
@@ -26,10 +27,14 @@ TIMEOUT = 5000
 def app_parts(qtbot, tmp_path):
     parts = network_parts()
     services = Services(
-        parts["wifi"], parts["ping"], parts["dns"], parts["netinfo"], parts["clock"], FakeWatcher()
-    )
+        parts["wifi"], parts["ping"], parts["dns"], parts["netinfo"], parts["clock"],
+        FakeWatcher(), parts["switcher"],
+    )  # fmt: skip
     settings = Settings(pings_per_target=4, routers=sample_routers(), first_run_done=True)
-    controller = AppController(settings, tmp_path / "settings.json", parts["store"], services)
+    controller = AppController(
+        settings, tmp_path / "settings.json", parts["store"], services,
+        switch_timing=SwitchTiming(1.0, 0.0, 0.01),
+    )  # fmt: skip
     window = MainWindow(controller)
     qtbot.addWidget(window)
     yield controller, window, parts
@@ -256,3 +261,78 @@ def test_history_compares_router_scores(qtbot, app_parts) -> None:
     text = chart.readout.text()
     assert text.startswith("Latest: ZTE ") and ", Neighbor ~" in text
     assert not window.history.comparison.grab().isNull()
+
+
+def info_bars(window) -> list[tuple[str, str]]:
+    return [(bar.title, bar.content) for bar in window.findChildren(InfoBar)]
+
+
+def test_test_all_from_the_dashboard(qtbot, app_parts) -> None:
+    controller, window, parts = app_parts
+    check(qtbot, controller)
+    asked, cards = [], []
+    window.bring_to_front = lambda: None  # keep the window off the screen
+    window.ask = lambda title, text, yes: asked.append((title, yes)) or True
+    card = window.dashboard.run_card
+    controller.activityChanged.connect(
+        lambda: cards.append((card.isHidden(), card.detail.text(), card.cancel_button.isEnabled()))
+    )
+    with qtbot.waitSignal(controller.testAllFinished, timeout=TIMEOUT):
+        window.dashboard.test_all_button.click()
+    assert asked == [("Test all routers?", "Test all")]
+    assert (False, "Connecting to Neighbor (1 of 1)…", True) in cards
+    assert (False, "Checking the network you're on…", False) in cards
+    assert card.isHidden()
+    assert parts["switcher"].calls == ["connect Neighbor", "connect ZTE-Home"]
+    _title, text = next(bar for bar in info_bars(window) if bar[0] == "Test all finished")
+    assert text.startswith("Tested Neighbor and ZTE.")
+    assert not window.dashboard.run_card.grab().isNull()
+
+
+def test_test_all_explains_why_nothing_can_be_tested(qtbot, app_parts) -> None:
+    controller, window, parts = app_parts
+    parts["switcher"].saved.clear()
+    asked = []
+    window.bring_to_front = lambda: None
+    window.ask = lambda title, text, yes: asked.append((title, text, yes)) or True
+    window.test_all()
+    qtbot.waitUntil(lambda: bool(asked), timeout=TIMEOUT)
+    title, text, yes = asked[0]
+    assert (title, yes) == ("No other router to test", None)
+    assert "• Neighbor: Windows hasn't saved it." in text
+    assert not controller.is_busy and parts["switcher"].calls == []
+
+
+def test_switch_to_the_recommended_router(qtbot, app_parts) -> None:
+    controller, window, parts = app_parts
+    check(qtbot, controller)
+    snap = controller.last_snapshot
+    rec = Recommendation("nb", Score(90, False), Score(70, False), 20)
+    controller.last_snapshot = replace(snap, report=replace(snap.report, recommendation=rec))
+    window.dashboard.refresh()
+    button = window.dashboard.current.switch_button
+    assert not button.isHidden() and button.text() == "Switch to Neighbor"
+    with qtbot.waitSignal(controller.switchFinished, timeout=TIMEOUT):
+        button.click()
+    assert parts["wifi"].connection.ssid == "Neighbor"
+    assert ("Switched to Neighbor", "Checking it now.") in info_bars(window)
+
+
+def test_scheduled_test_all_setting(qtbot, app_parts) -> None:
+    controller, window, _ = app_parts
+    page = window.settings_page
+    assert not page.test_all_switch.isChecked() and not page.test_all_interval.isEnabled()
+    page.test_all_switch.setChecked(True)
+    assert controller.settings.scheduled_test_all and page.test_all_interval.isEnabled()
+    page.test_all_interval.setCurrentIndex(page.test_all_interval.findData(4))
+    assert controller.settings.test_all_interval_h == 4
+
+
+def test_test_all_from_the_tray_and_the_keyboard(qtbot, app_parts) -> None:
+    controller, window, _ = app_parts
+    started = []
+    window.test_all = lambda: started.append(True)
+    click_menu_item(TrayIcon(controller, window).menu, "Test all now")
+    assert started == [True]
+    keys = [s.key() for s in window.findChildren(QShortcut)]
+    assert QKeySequence("Ctrl+T") in keys

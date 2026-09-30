@@ -10,11 +10,13 @@ from qfluentwidgets import (
     CaptionLabel,
     FlowLayout,
     IconWidget,
+    IndeterminateProgressBar,
     IndeterminateProgressRing,
     InfoBar,
     InfoBarIcon,
     InfoBarPosition,
     PrimaryPushButton,
+    ProgressBar,
     PushButton,
     SimpleCardWidget,
     StrongBodyLabel,
@@ -22,7 +24,7 @@ from qfluentwidgets import (
 )
 from qfluentwidgets import FluentIcon as FIF
 
-from router_checker.core.models import Router, RouterState, RouterStatus, Score
+from router_checker.core.models import Recommendation, Router, RouterState, RouterStatus, Score
 from router_checker.core.presentation import (
     DASH,
     band_text,
@@ -39,7 +41,7 @@ from router_checker.core.presentation import (
     state_detail,
     targets_text,
 )
-from router_checker.ui.controller import SPARKLINE_SPAN, AppController, Snapshot
+from router_checker.ui.controller import SPARKLINE_SPAN, AppController, RunState, Snapshot
 from router_checker.ui.pages.base import Page
 from router_checker.ui.shell import open_location_settings
 from router_checker.ui.widgets import (
@@ -63,16 +65,78 @@ STATE_ICONS = {
     RouterState.NOT_FOUND: FIF.REMOVE,
     RouterState.UNKNOWN: FIF.QUESTION,
 }
+RUN_TITLES = {
+    "test_all": "Testing all routers",
+    "switch": "Switching networks",
+    "recover": "Going back",
+}
+TEST_ALL_TIP = "Connect to each of your routers in turn and test it (Ctrl+T)"
+TEST_ALL_NEEDS_LOCATION = "Test all needs location access (see the message below)"
+
+
+class RunCard(SimpleCardWidget):
+    """What Test all (or a switch) is doing, with a progress bar and Cancel."""
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.icon = IconWidget(FIF.ROTATE, self)
+        self.icon.setFixedSize(20, 20)
+        self.title = StrongBodyLabel(self)
+        self.detail = BodyLabel(self)
+        self.detail.setWordWrap(True)
+        self.bar = ProgressBar(self, useAni=False)
+        self.busy_bar = IndeterminateProgressBar(self, start=False)
+        self.cancel_button = PushButton(FIF.CLOSE, "Cancel", self)
+        self.cancel_button.setToolTip("Stop after this step and reconnect to where you were")
+
+        texts = QVBoxLayout()
+        texts.setSpacing(2)
+        texts.addWidget(self.title)
+        texts.addWidget(self.detail)
+        top = QHBoxLayout()
+        top.setSpacing(12)
+        top.addWidget(self.icon, 0, Qt.AlignmentFlag.AlignVCenter)
+        top.addLayout(texts, 1)
+        top.addWidget(self.cancel_button, 0, Qt.AlignmentFlag.AlignVCenter)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(20, 14, 20, 16)
+        layout.setSpacing(10)
+        layout.addLayout(top)
+        layout.addWidget(self.bar)
+        layout.addWidget(self.busy_bar)
+        self.hide()
+
+    def show_state(self, state: RunState | None) -> None:
+        self.setVisible(state is not None)
+        if state is None:
+            self.busy_bar.stop()
+            return
+        self.title.setText(RUN_TITLES[state.kind])
+        self.detail.setText(state.text)
+        self.bar.setVisible(state.steps is not None)
+        self.busy_bar.setVisible(state.steps is None)
+        if state.steps is not None:
+            done, steps = state.steps
+            self.bar.setRange(0, steps)
+            self.bar.setValue(done)
+            self.busy_bar.stop()
+        elif not self.busy_bar.isStarted():
+            self.busy_bar.start()
+        self.cancel_button.setVisible(state.kind == "test_all")
+        self.cancel_button.setEnabled(state.can_cancel)
+        self.setAccessibleName(f"{self.title.text()}: {state.text}")
 
 
 class CurrentRouterCard(SimpleCardWidget):
     """Score ring, network, status and the four key numbers of the connection."""
 
     addRouterRequested = Signal(object)  # a prefilled Router
+    switchRequested = Signal(str)  # router id
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._prefill: Router | None = None
+        self._recommended: str | None = None
         self.ring = ScoreRing(124, self)
         self.dot = ColorDot(parent=self)
         self.name = SubtitleLabel("Checking…", self)
@@ -85,6 +149,8 @@ class CurrentRouterCard(SimpleCardWidget):
         self.signal = MetricBlock("Signal", self)
         self.recommend_badge = Badge("Recommended", self)
         self.recommend_text = BodyLabel("", self)
+        self.switch_button = PushButton(FIF.WIFI, "Switch", self)
+        self.switch_button.clicked.connect(self._switch)
         self.unknown_text = BodyLabel("", self)
         self.add_button = PushButton(FIF.ADD, "Add this router", self)
         self.add_button.clicked.connect(lambda: self.addRouterRequested.emit(self._prefill))
@@ -105,6 +171,7 @@ class CurrentRouterCard(SimpleCardWidget):
         rec_row.setSpacing(8)
         rec_row.addWidget(self.recommend_badge)
         rec_row.addWidget(self.recommend_text, 1)
+        rec_row.addWidget(self.switch_button)
 
         unknown_row = QHBoxLayout()
         unknown_row.addWidget(self.unknown_text, 1)
@@ -131,9 +198,12 @@ class CurrentRouterCard(SimpleCardWidget):
         layout.addLayout(unknown_row)
         self._set_rows(recommend=False, unknown=False, metrics=False)
 
-    def _set_rows(self, recommend: bool, unknown: bool, metrics: bool) -> None:
+    def _set_rows(
+        self, recommend: bool, unknown: bool, metrics: bool, can_switch: bool = False
+    ) -> None:
         self.recommend_badge.setVisible(recommend)
         self.recommend_text.setVisible(recommend)
+        self.switch_button.setVisible(recommend and can_switch)
         self.unknown_text.setVisible(unknown)
         self.add_button.setVisible(unknown)
         for block in (self.gateway, self.internet, self.loss, self.signal):
@@ -148,8 +218,16 @@ class CurrentRouterCard(SimpleCardWidget):
         self.status.set_status(status.level, status.title, status.detail)
         self._set_rows(False, False, False)
 
+    def _switch(self) -> None:
+        if self._recommended is not None:
+            self.switchRequested.emit(self._recommended)
+
     def show_snapshot(
-        self, snap: Snapshot, routers: tuple[Router, ...], failure: str | None
+        self,
+        snap: Snapshot,
+        routers: tuple[Router, ...],
+        failure: str | None,
+        can_switch: bool = False,  # the Switch button may connect to the recommended router
     ) -> None:
         report = snap.report
         status = overall_status(report, failure)
@@ -219,8 +297,7 @@ class CurrentRouterCard(SimpleCardWidget):
             self.signal.set_values(fmt_dbm(metrics.rssi), quality, "Wi-Fi signal strength (RSSI).")
 
         rec = report.recommendation
-        if rec is not None:
-            self.recommend_text.setText(recommendation_text(rec, routers))
+        self._show_recommendation(rec, routers)
         unknown = report.gateway is not None and router is None
         if unknown:
             ssid = conn.ssid if conn else ""
@@ -229,7 +306,19 @@ class CurrentRouterCard(SimpleCardWidget):
             )
             macs = [m for m in (report.gateway.gateway_mac, conn.bssid if conn else None) if m]
             self._prefill = Router.create(ssid or "New router", ssid=ssid or None, macs=macs)
-        self._set_rows(recommend=rec is not None, unknown=unknown, metrics=metrics is not None)
+        self._set_rows(rec is not None, unknown, metrics is not None, can_switch)
+
+    def _show_recommendation(self, rec: Recommendation | None, routers: tuple[Router, ...]) -> None:
+        self._recommended = rec.router_id if rec else None
+        if rec is None:
+            return
+        self.recommend_text.setText(recommendation_text(rec, routers))
+        name = next((r.name for r in routers if r.id == rec.router_id), "it")
+        self.switch_button.setText(f"Switch to {name}")
+        self.switch_button.setToolTip(
+            "Connect to it with the profile Windows saved. If that fails, "
+            "Router Checker goes back to this network."
+        )
 
 
 class RouterCard(FocusCard):
@@ -327,10 +416,13 @@ class DashboardPage(Page):
     addRouterRequested = Signal(object)  # prefilled Router or None
     openRouterRequested = Signal(str)
     exitRequested = Signal()
+    testAllRequested = Signal()
+    switchRequested = Signal(str)  # router id
 
     def __init__(self, controller: AppController, parent: QWidget | None = None) -> None:
         super().__init__("dashboardPage", "Dashboard", parent)
         self.controller = controller
+        self._preparing = False  # Test all is being planned
 
         self.spinner = IndeterminateProgressRing(self.view, start=False)
         self.spinner.setFixedSize(18, 18)
@@ -340,13 +432,20 @@ class DashboardPage(Page):
         self.check_button = PrimaryPushButton(FIF.SYNC, "Check now", self.view)
         self.check_button.setToolTip("Test the current router now (F5)")
         self.check_button.clicked.connect(controller.check_now)
+        self.test_all_button = PushButton(FIF.ROTATE, "Test all now", self.view)
+        self.test_all_button.setToolTip(TEST_ALL_TIP)
+        self.test_all_button.clicked.connect(lambda: self.testAllRequested.emit())
+        self.test_all_button.setVisible(controller.can_switch)
         self.exit_button = PushButton(FIF.POWER_BUTTON, "Exit", self.view)
         self.exit_button.setToolTip("Stop monitoring and close Router Checker (Ctrl+Q)")
         self.exit_button.clicked.connect(lambda: self.exitRequested.emit())  # drop "checked"
         self.header.addWidget(self.spinner, 0, Qt.AlignmentFlag.AlignVCenter)
         self.header.addWidget(self.when, 0, Qt.AlignmentFlag.AlignVCenter)
-        self.header.addWidget(self.check_button, 0, Qt.AlignmentFlag.AlignVCenter)
-        self.header.addWidget(self.exit_button, 0, Qt.AlignmentFlag.AlignVCenter)
+        for button in (self.check_button, self.test_all_button, self.exit_button):
+            self.header.addWidget(button, 0, Qt.AlignmentFlag.AlignVCenter)
+
+        self.run_card = RunCard(self.view)
+        self.run_card.cancel_button.clicked.connect(lambda: controller.cancel_test_all())
 
         self.location_bar = InfoBar(
             InfoBarIcon.WARNING,
@@ -376,6 +475,7 @@ class DashboardPage(Page):
 
         self.current = CurrentRouterCard(self.view)
         self.current.addRouterRequested.connect(self.addRouterRequested)
+        self.current.switchRequested.connect(self.switchRequested)
 
         self.others_title = SubtitleLabel("Other routers", self.view)
         self.cards_host = QWidget(self.view)
@@ -396,6 +496,7 @@ class DashboardPage(Page):
         empty_layout.addWidget(add_button)
         empty_layout.addStretch(1)
 
+        self.body.addWidget(self.run_card)
         self.body.addWidget(self.location_bar)
         self.body.addWidget(self.wifi_bar)
         self.body.addWidget(self.current)
@@ -413,26 +514,39 @@ class DashboardPage(Page):
         controller.checkFinished.connect(self.refresh)
         controller.checkFailed.connect(self.refresh)
         controller.settingsChanged.connect(self.refresh)
+        controller.activityChanged.connect(self.refresh)
+        self.refresh()
+
+    def set_preparing(self, preparing: bool) -> None:
+        """Test all is being planned (reading the saved profiles and a scan)."""
+        self._preparing = preparing
         self.refresh()
 
     def refresh(self, *_args: object) -> None:
         c = self.controller
         snap = c.last_snapshot
         routers = c.settings.routers
-        checking = c.is_checking
-        self.check_button.setEnabled(not checking)
-        self.spinner.setVisible(checking)
-        if checking:
-            self.spinner.start()
-        else:
-            self.spinner.stop()
+        report = snap.report if snap else None
+        busy = c.is_busy or self._preparing
+        self.check_button.setEnabled(not busy)
+        location_off = report is not None and not report.location_allowed
+        self.test_all_button.setEnabled(not busy and not location_off)
+        self.test_all_button.setToolTip(TEST_ALL_NEEDS_LOCATION if location_off else TEST_ALL_TIP)
+        if busy == self.spinner.isHidden():  # only on changes: start() restarts the animation
+            self.spinner.setVisible(busy)
+            if busy:
+                self.spinner.start()
+            else:
+                self.spinner.stop()
+        self.run_card.show_state(c.run_state)
         if snap is None:
             self.current.show_waiting(c.last_failure)
         else:
-            self.current.show_snapshot(snap, routers, c.last_failure)
+            rec = report.recommendation
+            can_switch = rec is not None and c.can_switch_to(rec.router_id)
+            self.current.show_snapshot(snap, routers, c.last_failure, can_switch)
 
-        report = snap.report if snap else None
-        self.location_bar.setVisible(report is not None and not report.location_allowed)
+        self.location_bar.setVisible(location_off)
         wifi_error = report.wifi_error if report else None
         self.wifi_bar.setVisible(bool(wifi_error))
         if wifi_error:
@@ -468,6 +582,13 @@ class DashboardPage(Page):
 
     def _tick(self) -> None:
         c = self.controller
+        activity = c.activity
+        if activity is not None:
+            self.when.setText(activity)
+            return
+        if self._preparing:
+            self.when.setText("Preparing Test all…")
+            return
         if c.is_checking:
             self.when.setText("Checking now…")
             return

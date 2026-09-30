@@ -15,6 +15,8 @@ from qfluentwidgets import (
 )
 
 from router_checker.core.models import Router
+from router_checker.core.presentation import Message, StatusLevel, confirm_test_all
+from router_checker.core.switching import TestAllPlan
 from router_checker.ui.controller import AppController
 from router_checker.ui.dialogs.first_run import FirstRunDialog
 from router_checker.ui.dialogs.router_dialog import RouterDialog
@@ -33,6 +35,7 @@ class MainWindow(FluentWindow):
         super().__init__()
         self.controller = controller
         self._quitting = False
+        self._planning = False  # Test all is being planned
         self._hidden_hint_shown = False
         self._theme_listener: SystemThemeListener | None = None
         self._shown_once = False
@@ -57,10 +60,14 @@ class MainWindow(FluentWindow):
         self.dashboard.addRouterRequested.connect(self.add_router)
         self.dashboard.openRouterRequested.connect(self.show_router)
         self.dashboard.exitRequested.connect(self.exitRequested)
+        self.dashboard.testAllRequested.connect(self.test_all)
+        self.dashboard.switchRequested.connect(self.switch_to)
         self.routers.addRequested.connect(lambda: self.add_router(None))
         self.routers.editRequested.connect(self.edit_router)
         self.routers.deleteRequested.connect(self.delete_router)
         controller.checkFailed.connect(self._show_check_failed)
+        controller.testAllFinished.connect(self._test_all_finished)
+        controller.switchFinished.connect(self.show_message)
 
         pages = (self.dashboard, self.routers, self.history, self.settings_page)
         for number, page in enumerate(pages, start=1):
@@ -70,6 +77,7 @@ class MainWindow(FluentWindow):
         QShortcut(QKeySequence(Qt.Key.Key_F5), self, activated=controller.check_now)
         QShortcut(QKeySequence("Ctrl+R"), self, activated=controller.check_now)
         QShortcut(QKeySequence("Ctrl+N"), self, activated=lambda: self.add_router(None))
+        QShortcut(QKeySequence("Ctrl+T"), self, activated=self.test_all)
         QShortcut(QKeySequence("Ctrl+Q"), self, activated=self.exitRequested.emit)
 
     # --- window behavior --------------------------------------------------------
@@ -146,6 +154,77 @@ class MainWindow(FluentWindow):
     def show_router(self, router_id: str) -> None:
         self.switchTo(self.routers)
         self.routers.show_details(router_id)
+
+    # --- Test all and switching ---------------------------------------------------
+
+    def test_all(self) -> None:
+        """Plan Test all, ask, then start it (dashboard button, Ctrl+T, tray menu)."""
+        self.bring_to_front()
+        if self._planning or self.controller.is_busy or not self.controller.can_switch:
+            return
+        self._planning = True
+        self.dashboard.set_preparing(True)
+        self.controller.plan_test_all(self._confirm_test_all, self._test_all_plan_failed)
+
+    def _confirm_test_all(self, plan: TestAllPlan) -> None:
+        self._planning = False
+        self.dashboard.set_preparing(False)
+        if self._quitting:
+            return
+        question = confirm_test_all(plan)
+        if not plan.can_run:
+            self.ask(question.title, question.text, None)
+        elif self.ask(question.title, question.text, "Test all") and not (
+            self.controller.start_test_all(plan)
+        ):
+            self.show_message(
+                Message(
+                    StatusLevel.WARNING,
+                    "Test all didn't start",
+                    "Another Test all or a switch is running. Try again when it's done.",
+                )
+            )
+
+    def _test_all_plan_failed(self, exc: BaseException) -> None:
+        self._planning = False
+        self.dashboard.set_preparing(False)
+        self.show_message(Message(StatusLevel.BAD, "Test all can't start", f"{exc}."))
+
+    def _test_all_finished(self, message: Message, scheduled: bool) -> None:
+        if not scheduled or message.restore_failed:  # scheduled runs stay quiet if all went well
+            self.show_message(message)
+
+    def switch_to(self, router_id: str) -> None:
+        if not self.controller.switch_to(router_id):
+            text = "Wait until the current check or Test all is done, then try again."
+            self.show_message(Message(StatusLevel.WARNING, "Can't switch right now", text))
+
+    def ask(self, title: str, text: str, yes: str | None) -> bool:
+        """A modal question; ``yes=None`` shows only OK."""
+        box = MessageBox(title, text, self)
+        if yes is None:
+            box.yesButton.setText("OK")
+            box.hideCancelButton()
+        else:
+            box.yesButton.setText(yes)
+            box.cancelButton.setText("Cancel")
+        return bool(box.exec())
+
+    def show_message(self, message: Message) -> None:
+        """A run's result as an info bar; problems stay until closed."""
+        show = {
+            StatusLevel.GOOD: InfoBar.success,
+            StatusLevel.WARNING: InfoBar.warning,
+            StatusLevel.BAD: InfoBar.error,
+        }.get(message.level, InfoBar.info)
+        duration = {StatusLevel.GOOD: 6000, StatusLevel.BAD: -1}.get(message.level, 12000)
+        show(
+            message.title,
+            message.text,
+            duration=duration,
+            position=InfoBarPosition.TOP,
+            parent=self,
+        )
 
     # --- first run and messages -------------------------------------------------
 

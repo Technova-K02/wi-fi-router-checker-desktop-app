@@ -37,7 +37,7 @@ from router_checker import __version__
 from router_checker.core.alerts import Thresholds
 from router_checker.core.presentation import quiet_hours_text
 from router_checker.core.quiet_hours import QuietHours
-from router_checker.core.scheduler import INTERVAL_CHOICES_MIN
+from router_checker.core.scheduler import INTERVAL_CHOICES_MIN, TEST_ALL_INTERVAL_CHOICES_H
 from router_checker.core.settings import Settings, is_valid_target
 from router_checker.ui.controller import AppController
 from router_checker.ui.pages.base import Page
@@ -182,6 +182,16 @@ class SettingsPage(Page):
         self.interval.currentIndexChanged.connect(lambda _i: self._apply())
         self.network_change = SwitchButton()
         self.network_change.checkedChanged.connect(lambda _c: self._apply())
+        self.test_all_interval = ComboBox()
+        for hours in TEST_ALL_INTERVAL_CHOICES_H:
+            self.test_all_interval.addItem(
+                f"Every {hours} hour{'s' if hours > 1 else ''}", userData=hours
+            )
+        self.test_all_interval.setAccessibleName("How often the scheduled Test all runs")
+        self.test_all_interval.currentIndexChanged.connect(lambda _i: self._apply())
+        self.test_all_switch = SwitchButton()
+        self.test_all_switch.setAccessibleName("Scheduled Test all")
+        self.test_all_switch.checkedChanged.connect(lambda _c: self._apply())
         self.targets = TargetsEditor()
         self.targets.changed.connect(self._targets_changed)
         self.pings = _spin(3, 30, " pings")
@@ -203,6 +213,15 @@ class SettingsPage(Page):
                 self.network_change,
             )
         )
+        self.test_all_card = _card(
+            FIF.DATE_TIME,
+            "Scheduled Test all",
+            "Runs while you're away (5 minutes without input). Wi-Fi drops briefly.",
+            self.test_all_interval,
+            self.test_all_switch,
+        )
+        self.test_all_card.setVisible(controller.can_switch)
+        monitoring.addSettingCard(self.test_all_card)
         self.targets_card = ExpandGroupSettingCard(
             FIF.GLOBE,
             "Internet targets",
@@ -444,6 +463,10 @@ class SettingsPage(Page):
         try:
             self.interval.setCurrentIndex(max(0, self.interval.findData(settings.interval_min)))
             self.network_change.setChecked(settings.check_on_network_change)
+            self.test_all_switch.setChecked(settings.scheduled_test_all)
+            index = self.test_all_interval.findData(settings.test_all_interval_h)
+            self.test_all_interval.setCurrentIndex(max(0, index))
+            self.test_all_interval.setEnabled(settings.scheduled_test_all)
             self.targets.set_targets(settings.targets)
             self.targets_card._adjustViewSize()
             self.pings.setValue(settings.pings_per_target)
@@ -481,6 +504,8 @@ class SettingsPage(Page):
                 current,
                 interval_min=self.interval.currentData(),
                 check_on_network_change=self.network_change.isChecked(),
+                scheduled_test_all=self.test_all_switch.isChecked(),
+                test_all_interval_h=self.test_all_interval.currentData(),
                 targets=self.targets.targets(),
                 pings_per_target=self.pings.value(),
                 thresholds=Thresholds(
