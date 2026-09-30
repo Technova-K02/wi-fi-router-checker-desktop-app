@@ -3,7 +3,16 @@
 from __future__ import annotations
 
 from PySide6.QtCore import QPointF, QRectF, Qt
-from PySide6.QtGui import QColor, QFont, QIcon, QPainter, QPainterPath, QPen, QPixmap
+from PySide6.QtGui import (
+    QColor,
+    QFont,
+    QIcon,
+    QLinearGradient,
+    QPainter,
+    QPainterPath,
+    QPen,
+    QPixmap,
+)
 from qfluentwidgets import isDarkTheme
 
 from router_checker.core.presentation import StatusLevel
@@ -36,7 +45,8 @@ _TEXT_DARK = {
     StatusLevel.UNKNOWN: "#C5C5C5",
 }
 
-APP_BLUE = "#0078D4"
+APP_BLUE = "#0067C0"
+APP_BLUE_LIGHT = "#2B8FE0"
 
 
 def level_fill(level: StatusLevel) -> QColor:
@@ -116,24 +126,45 @@ def status_icon(level: StatusLevel) -> QIcon:
 
 
 def app_icon() -> QIcon:
-    """Placeholder app icon (Wi-Fi arcs on a blue tile) until Phase 6."""
+    """Wi-Fi arcs on a blue tile with a green check badge ("this router checks out").
+
+    Sizes up to 24 px drop the badge and the outer arc and use thicker lines,
+    so the taskbar and title bar icons stay crisp.
+    """
 
     def paint(p: QPainter, s: int) -> None:
+        small = s <= 24
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(QColor(APP_BLUE))
+        tile = QLinearGradient(0, 0, 0, s)
+        tile.setColorAt(0, QColor(APP_BLUE_LIGHT))
+        tile.setColorAt(1, QColor(APP_BLUE))
+        p.setBrush(tile)
         p.drawRoundedRect(QRectF(0, 0, s, s), s * 0.22, s * 0.22)
-        pen = QPen(QColor("#FFFFFF"), max(1.2, s * 0.08))
+
+        pen = QPen(QColor("#FFFFFF"), max(1.6, s * (0.13 if small else 0.085)))
         pen.setCapStyle(Qt.PenCapStyle.RoundCap)
         p.setPen(pen)
-        cx, cy = s / 2, s * 0.74
-        for r in (s * 0.16, s * 0.3, s * 0.44):
+        if small:
+            cx, cy, radii, dot = s / 2, s * 0.76, (s * 0.26, s * 0.48), s * 0.1
+        else:
+            cx, cy, radii, dot = s * 0.44, s * 0.7, (s * 0.15, s * 0.28, s * 0.41), s * 0.065
+        for r in radii:
             p.drawArc(QRectF(cx - r, cy - r, 2 * r, 2 * r), 45 * 16, 90 * 16)
         p.setPen(Qt.PenStyle.NoPen)
         p.setBrush(QColor("#FFFFFF"))
-        p.drawEllipse(QPointF(cx, cy), s * 0.06, s * 0.06)
+        p.drawEllipse(QPointF(cx, cy), dot, dot)
+        if not small:
+            # A ring in the tile color separates the badge from the arcs behind it.
+            r = s * 0.2
+            center = QPointF(s * 0.74, s * 0.74)
+            p.setBrush(tile)
+            p.drawEllipse(center, r + s * 0.035, r + s * 0.035)
+            paint_status_icon(
+                p, QRectF(center.x() - r, center.y() - r, 2 * r, 2 * r), StatusLevel.GOOD
+            )
 
-    return _icon(paint, (16, 20, 24, 32, 48, 64, 128, 256))
+    return _icon(paint, (16, 20, 24, 32, 40, 48, 64, 128, 256))
 
 
 # Chart lines as (light theme, dark theme): readable on both window backgrounds.
