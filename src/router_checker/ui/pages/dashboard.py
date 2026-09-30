@@ -151,6 +151,8 @@ class CurrentRouterCard(SimpleCardWidget):
         self.recommend_text = BodyLabel("", self)
         self.switch_button = PushButton(FIF.WIFI, "Switch", self)
         self.switch_button.clicked.connect(self._switch)
+        self.auto_text = CaptionLabel(self)  # automatic switching: progress or pause
+        self.auto_text.hide()
         self.unknown_text = BodyLabel("", self)
         self.add_button = PushButton(FIF.ADD, "Add this router", self)
         self.add_button.clicked.connect(lambda: self.addRouterRequested.emit(self._prefill))
@@ -195,6 +197,7 @@ class CurrentRouterCard(SimpleCardWidget):
         layout.setSpacing(12)
         layout.addLayout(top)
         layout.addLayout(rec_row)
+        layout.addWidget(self.auto_text)
         layout.addLayout(unknown_row)
         self._set_rows(recommend=False, unknown=False, metrics=False)
 
@@ -582,6 +585,9 @@ class DashboardPage(Page):
 
     def _tick(self) -> None:
         c = self.controller
+        auto = c.auto_switch_text
+        self.current.auto_text.setText(auto or "")
+        self.current.auto_text.setVisible(auto is not None)
         activity = c.activity
         if activity is not None:
             self.when.setText(activity)

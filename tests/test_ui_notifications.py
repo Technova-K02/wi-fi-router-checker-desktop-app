@@ -162,3 +162,17 @@ def test_only_a_failed_reconnect_is_a_notification(center) -> None:
     toaster.broken = True
     center.controller.switchFinished.emit(problem)
     assert tray.messages[-1] == (problem.title, problem.text, StatusLevel.BAD)
+
+
+def test_an_automatic_switch_offers_to_go_back(qtbot, center) -> None:
+    center, toaster, _ = center
+    switched = Message(StatusLevel.GOOD, "Switched to Neighbor", "Why.", back_to="zte")
+    center.controller.autoSwitched.emit(switched)
+    toast = toaster.shown[-1]
+    assert (toast["tag"], toast["title"]) == ("auto-switch", "Switched to Neighbor")
+    assert toast["buttons"] == [("Open", OPEN), ("Go back", "switch:zte")]
+    with qtbot.waitSignal(center.switchRequested, timeout=TIMEOUT) as requested:
+        threading.Thread(target=toast["on_action"], args=("switch:zte",)).start()
+    assert requested.args == ["zte"]
+    center.controller.autoSwitched.emit(Message(StatusLevel.WARNING, "Back on ZTE", "Why."))
+    assert toaster.shown[-1]["buttons"] == [("Open", OPEN)]

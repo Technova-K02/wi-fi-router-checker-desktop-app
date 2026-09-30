@@ -74,6 +74,7 @@ class NotificationCenter(QObject):
         controller.alertRaised.connect(self.show_alert)
         controller.testAllFinished.connect(lambda message, _scheduled: self.show_run(message))
         controller.switchFinished.connect(self.show_run)
+        controller.autoSwitched.connect(self.show_auto_switch)
 
     def show_alert(self, alert: Alert) -> None:
         buttons = [("Open", OPEN)]
@@ -98,6 +99,19 @@ class NotificationCenter(QObject):
         self._show(
             "reconnect", message.title, message.text, [("Open", OPEN)], ALERT_LIFETIME,
             lambda: self.tray.show_message(message.title, message.text, StatusLevel.BAD, 10_000),
+        )  # fmt: skip
+
+    def show_auto_switch(self, message: Message) -> None:
+        """An automatic switch (or going back) happened; offer to undo a switch."""
+        if not self.controller.alerts_allowed(self.controller.now()):
+            return
+        buttons = [("Open", OPEN)]
+        if message.back_to is not None:
+            buttons.append(("Go back", SWITCH + message.back_to))
+        level = StatusLevel.GOOD if message.level is StatusLevel.GOOD else StatusLevel.BAD
+        self._show(
+            "auto-switch", message.title, message.text, buttons, ALERT_LIFETIME,
+            lambda: self.tray.show_message(message.title, message.text, level, 10_000),
         )  # fmt: skip
 
     def notify_hidden(self) -> None:

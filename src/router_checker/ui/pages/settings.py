@@ -192,6 +192,9 @@ class SettingsPage(Page):
         self.test_all_switch = SwitchButton()
         self.test_all_switch.setAccessibleName("Scheduled Test all")
         self.test_all_switch.checkedChanged.connect(lambda _c: self._apply())
+        self.auto_switch = SwitchButton()
+        self.auto_switch.setAccessibleName("Switch automatically")
+        self.auto_switch.checkedChanged.connect(lambda _c: self._apply())
         self.targets = TargetsEditor()
         self.targets.changed.connect(self._targets_changed)
         self.pings = _spin(3, 30, " pings")
@@ -222,6 +225,14 @@ class SettingsPage(Page):
         )
         self.test_all_card.setVisible(controller.can_switch)
         monitoring.addSettingCard(self.test_all_card)
+        self.auto_switch_card = _card(
+            FIF.WIFI,
+            "Switch automatically",
+            "When a tested router stays clearly better, or yours is down. At most every 30 min.",
+            self.auto_switch,
+        )
+        self.auto_switch_card.setVisible(controller.can_switch)
+        monitoring.addSettingCard(self.auto_switch_card)
         self.targets_card = ExpandGroupSettingCard(
             FIF.GLOBE,
             "Internet targets",
@@ -464,6 +475,7 @@ class SettingsPage(Page):
             self.interval.setCurrentIndex(max(0, self.interval.findData(settings.interval_min)))
             self.network_change.setChecked(settings.check_on_network_change)
             self.test_all_switch.setChecked(settings.scheduled_test_all)
+            self.auto_switch.setChecked(settings.auto_switch)
             index = self.test_all_interval.findData(settings.test_all_interval_h)
             self.test_all_interval.setCurrentIndex(max(0, index))
             self.test_all_interval.setEnabled(settings.scheduled_test_all)
@@ -506,6 +518,7 @@ class SettingsPage(Page):
                 check_on_network_change=self.network_change.isChecked(),
                 scheduled_test_all=self.test_all_switch.isChecked(),
                 test_all_interval_h=self.test_all_interval.currentData(),
+                auto_switch=self.auto_switch.isChecked(),
                 targets=self.targets.targets(),
                 pings_per_target=self.pings.value(),
                 thresholds=Thresholds(

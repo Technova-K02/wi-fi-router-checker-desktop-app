@@ -68,6 +68,7 @@ class MainWindow(FluentWindow):
         controller.checkFailed.connect(self._show_check_failed)
         controller.testAllFinished.connect(self._test_all_finished)
         controller.switchFinished.connect(self.show_message)
+        controller.autoSwitched.connect(self.show_message)
 
         pages = (self.dashboard, self.routers, self.history, self.settings_page)
         for number, page in enumerate(pages, start=1):

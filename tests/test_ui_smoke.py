@@ -336,3 +336,19 @@ def test_test_all_from_the_tray_and_the_keyboard(qtbot, app_parts) -> None:
     assert started == [True]
     keys = [s.key() for s in window.findChildren(QShortcut)]
     assert QKeySequence("Ctrl+T") in keys
+
+
+def test_automatic_switching_setting_and_dashboard_line(qtbot, app_parts) -> None:
+    controller, window, _ = app_parts
+    page = window.settings_page
+    assert not page.auto_switch.isChecked()
+    page.auto_switch.setChecked(True)
+    assert controller.settings.auto_switch
+    controller._policy.switched("zte", "nb", controller.now(), automatic=False)
+    window.dashboard._tick()
+    line = window.dashboard.current.auto_text
+    assert not line.isHidden()
+    assert line.text() == "Automatic switching pauses for 30 more min after the last switch."
+    page.auto_switch.setChecked(False)
+    window.dashboard._tick()
+    assert line.isHidden()
