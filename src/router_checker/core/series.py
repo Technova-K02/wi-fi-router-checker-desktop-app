@@ -103,7 +103,7 @@ def router_charts(
         ),
         score=(
             make_series(
-                "Measured", ((p.timestamp, None if p.estimated else p.value) for p in points), gap
+                "Score", ((p.timestamp, None if p.estimated else p.value) for p in points), gap
             ),
             make_series(
                 "Estimated", ((p.timestamp, p.value if p.estimated else None) for p in points), gap
@@ -138,7 +138,7 @@ def score_lines(
             ScoreLine(
                 router_id,
                 make_series(
-                    "Measured",
+                    "Score",
                     ((p.timestamp, None if p.estimated else p.value) for p in points),
                     gap,
                 ),

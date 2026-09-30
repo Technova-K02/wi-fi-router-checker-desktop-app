@@ -40,6 +40,7 @@ from router_checker.core.presentation import (
     verdict_level,
 )
 from router_checker.ui.controller import AppController, RouterDetails
+from router_checker.ui.history_cards import PopularTimesCard, RouterHistoryCard
 from router_checker.ui.pages.base import Page
 from router_checker.ui.tables import fill_events, style_table
 from router_checker.ui.widgets import ColorDot, FocusCard
@@ -152,6 +153,8 @@ class RouterDetailsView(Page):
         self.identity = InfoCard("Identity", self.view)
         self.last_check = InfoCard("Latest test", self.view)
         self.last_seen = InfoCard("Last seen nearby", self.view)
+        self.history_card = RouterHistoryCard(controller, self.view)
+        self.popular_card = PopularTimesCard(controller, self.view)
         events_title = SubtitleLabel("Events", self.view)
         self.events = TableWidget(self.view)
         self.events.setColumnCount(2)
@@ -159,7 +162,15 @@ class RouterDetailsView(Page):
         style_table(self.events)
         self.events.setMinimumHeight(220)
 
-        for widget in (self.identity, self.last_check, self.last_seen, events_title, self.events):
+        for widget in (
+            self.identity,
+            self.last_check,
+            self.last_seen,
+            self.history_card,
+            self.popular_card,
+            events_title,
+            self.events,
+        ):
             self.body.addWidget(widget)
         QShortcut(QKeySequence(Qt.Key.Key_Escape), self, activated=self.back.emit)
         controller.checkFinished.connect(self._reload)
@@ -168,6 +179,10 @@ class RouterDetailsView(Page):
     def show_router(self, router_id: str) -> None:
         self.router_id = router_id
         self._reload()
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        self._reload_charts()
 
     def _reload(self, *_args: object) -> None:
         router = self.controller.settings.router(self.router_id) if self.router_id else None
@@ -181,6 +196,13 @@ class RouterDetailsView(Page):
             "MAC addresses are linked automatically when you connect to this router.",
         )
         self.controller.load_router_details(router.id, self._show_details)
+        if self.isVisible():
+            self._reload_charts()
+
+    def _reload_charts(self) -> None:
+        if self.router_id is not None and self.controller.settings.router(self.router_id):
+            self.history_card.show_router(self.router_id)
+            self.popular_card.show_router(self.router_id)
 
     def _show_details(self, details: RouterDetails) -> None:
         if details.router_id != self.router_id:

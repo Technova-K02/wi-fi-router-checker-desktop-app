@@ -134,3 +134,8 @@ def app_icon() -> QIcon:
         p.drawEllipse(QPointF(cx, cy), s * 0.06, s * 0.06)
 
     return _icon(paint, (16, 20, 24, 32, 48, 64, 128, 256))
+
+
+# Chart lines as (light theme, dark theme): readable on both window backgrounds.
+GATEWAY_LINE = ("#005FB8", "#60CDFF")
+INTERNET_LINE = ("#8E4EC6", "#D6A6FF")

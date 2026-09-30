@@ -214,3 +214,45 @@ def test_closing_the_window_hints_once(qtbot, app_parts) -> None:
         window.close()
     with qtbot.assertNotEmitted(window.hiddenToTray, wait=100):
         window.close()
+
+
+def test_router_details_charts_and_popular_times(qtbot, app_parts) -> None:
+    controller, window, parts = app_parts
+    check(qtbot, controller)
+    parts["clock"].advance(5)
+    check(qtbot, controller)
+    details = window.routers.details
+    card, popular = details.history_card, details.popular_card
+    card.show_router("zte")
+    popular.show_router("zte")
+    qtbot.waitUntil(lambda: card.note.text() != "", timeout=TIMEOUT)
+    assert card.note.text() == "2 tests in the last 24 hours."
+    assert card.latency.readout.text() == (
+        "Gateway: median 2.0 ms, highest 2.0 ms · Internet: median 10 ms, highest 10 ms"
+    )
+    assert "Internet 10 ms" in card.latency.readout_at(parts["clock"].now().timestamp())
+    assert card.loss.readout.text().startswith("Gateway: median 0%")
+    assert card.score.readout.text().startswith("Score: median ")
+    with qtbot.waitSignal(controller._taskDone, timeout=TIMEOUT):
+        card.span.setCurrentItem("7 d")
+    qtbot.waitUntil(lambda: card.note.text() == "2 tests in the last 7 days.", timeout=TIMEOUT)
+
+    qtbot.waitUntil(lambda: popular.summary.text() != "", timeout=TIMEOUT)
+    assert popular.summary.text().startswith("Not enough data yet (1 hour so far)")
+    qtbot.keyClick(popular.heatmap, Qt.Key.Key_Right)
+    assert popular.heatmap.cell == (0, 1)
+    assert popular.readout.text().startswith("Monday 01:00–02:00: ")
+    for theme in (Theme.LIGHT, Theme.DARK):
+        setTheme(theme)
+        assert not card.grab().isNull() and not popular.grab().isNull()
+
+
+def test_history_compares_router_scores(qtbot, app_parts) -> None:
+    controller, window, _ = app_parts
+    check(qtbot, controller)
+    window.history.reload()  # the page reloads when shown; the test window stays hidden
+    chart = window.history.comparison.chart
+    qtbot.waitUntil(lambda: chart.readout.text() != "", timeout=TIMEOUT)
+    text = chart.readout.text()
+    assert text.startswith("Latest: ZTE ") and ", Neighbor ~" in text
+    assert not window.history.comparison.grab().isNull()

@@ -29,6 +29,7 @@ from router_checker.core.models import (
     ScanObservation,
     ScorePoint,
 )
+from router_checker.core.popularity import PopularTimes, popular_times
 from router_checker.core.presentation import Status, overall_status
 from router_checker.core.protocols import (
     Clock,
@@ -40,6 +41,7 @@ from router_checker.core.protocols import (
     WifiService,
 )
 from router_checker.core.scheduler import effective_interval
+from router_checker.core.series import RouterCharts, ScoreLine, max_gap, router_charts, score_lines
 from router_checker.core.settings import Settings, save_settings
 
 log = logging.getLogger(__name__)
@@ -89,6 +91,13 @@ class RouterDetails:
 class ScanResult:
     entries: list[ScanEntry]
     profiles: list[str]
+
+
+@dataclass(frozen=True, slots=True)
+class ScoreHistory:
+    start: datetime
+    end: datetime
+    lines: list[ScoreLine]
 
 
 def gateway_key(gateway: GatewayInfo | None) -> tuple[str, str] | None:
@@ -419,6 +428,40 @@ class AppController(QObject):
                 store.latest_observation(router_id),
                 store.events(router_id, EVENTS_LIMIT),
             )
+
+        self.run_task(work, on_done, self._log_error)
+
+    def load_router_charts(
+        self, router_id: str, span: timedelta, on_done: Callable[[RouterCharts], None]
+    ) -> None:
+        store, end = self._store, self.now()
+        start, gap = end - span, max_gap(self._settings.interval_min)
+
+        def work() -> RouterCharts:
+            checks, scores = store.checks(router_id, start), store.scores(router_id, start)
+            return router_charts(router_id, checks, scores, start, end, gap)
+
+        self.run_task(work, on_done, self._log_error)
+
+    def load_popular_times(self, router_id: str, on_done: Callable[[PopularTimes], None]) -> None:
+        """Busyness by weekday and hour over the kept history, in local time."""
+        store, tz = self._store, self._tz
+        since = self.now() - timedelta(days=self._settings.retention_days)
+
+        def work() -> PopularTimes:
+            return popular_times(store.hourly(router_id, since), tz)
+
+        self.run_task(work, on_done, self._log_error)
+
+    def load_score_lines(self, span: timedelta, on_done: Callable[[ScoreHistory], None]) -> None:
+        """Every router's score over ``span``, for the History comparison chart."""
+        store, end = self._store, self.now()
+        start, gap = end - span, max_gap(self._settings.interval_min)
+        router_ids = [r.id for r in self._settings.routers]
+
+        def work() -> ScoreHistory:
+            scores = {rid: store.scores(rid, start) for rid in router_ids}
+            return ScoreHistory(start, end, score_lines(scores, start, end, gap))
 
         self.run_task(work, on_done, self._log_error)
 

@@ -1,4 +1,4 @@
-"""History: recent checks and the event log (charts come in Phase 3)."""
+"""History: every router's score side by side, recent checks and the event log."""
 
 from __future__ import annotations
 
@@ -15,6 +15,7 @@ from router_checker.core.presentation import (
     verdict_level,
 )
 from router_checker.ui.controller import AppController, HistoryData
+from router_checker.ui.history_cards import ScoreComparisonCard
 from router_checker.ui.pages.base import Page
 from router_checker.ui.style import level_text_color
 from router_checker.ui.tables import fill_events, fill_table, style_table
@@ -34,6 +35,8 @@ class HistoryPage(Page):
         self.filter.currentIndexChanged.connect(lambda _i: self.reload())
         self.header.addWidget(self.filter)
 
+        self.comparison = ScoreComparisonCard(controller, self.view)
+        self.body.addWidget(self.comparison)
         self.body.addWidget(SubtitleLabel("Checks", self.view))
         self.checks = TableWidget(self.view)
         self.checks.setColumnCount(len(CHECK_COLUMNS))
@@ -78,6 +81,7 @@ class HistoryPage(Page):
         data = self.filter.currentData()
         router_id = None if data in (None, ALL) else data
         self.controller.load_history(router_id, self._show)
+        self.comparison.reload()
 
     def _show(self, data: HistoryData) -> None:
         now = self.controller.now()
