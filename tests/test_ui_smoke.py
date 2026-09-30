@@ -439,6 +439,11 @@ def test_add_the_router_youre_connected_to(qtbot, app_parts) -> None:
     assert dialog.mac_feedback.text() == (
         "✓ Added 12-34-56-78-9A-BC, the router you're connected to over Ethernet."
     )
+    parts["netinfo"].cable = cable_gateway()  # the ZTE
+    dialog.use_current.click()
+    qtbot.waitUntil(lambda: dialog.use_current.isEnabled(), timeout=TIMEOUT)
+    assert dialog.mac_feedback.text() == "You're connected to ZTE, which you've already added."
+    assert len(dialog._macs) == 1
     parts["netinfo"].cable = parts["netinfo"].wifi = None
     dialog.use_current.click()
     qtbot.waitUntil(lambda: dialog.use_current.isEnabled(), timeout=TIMEOUT)

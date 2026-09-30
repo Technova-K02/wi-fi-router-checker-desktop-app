@@ -347,6 +347,16 @@ class RouterDialog(MessageBoxBase):
                 f"The router at {gateway.gateway_ip} didn't tell its MAC. Try again.", error=True
             )
             return
+        editing = getattr(self._editing, "id", None)
+        owner = next(
+            (r for r in self.controller.settings.routers if mac in r.macs and r.id != editing),
+            None,
+        )
+        if owner is not None:
+            self._set_feedback(
+                f"You're connected to {owner.name}, which you've already added.", error=True
+            )
+            return
         if mac not in self._macs:
             self._macs.append(mac)
             self._rebuild_macs()
