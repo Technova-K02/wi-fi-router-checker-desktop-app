@@ -23,6 +23,7 @@ from router_checker.core.alerts import (
     Thresholds,
 )
 from router_checker.core.mac import MacAddress
+from router_checker.core.middle import Endpoint, parse_endpoint
 from router_checker.core.models import LinkChoice, Router
 from router_checker.core.quiet_hours import QuietHours, format_hhmm, parse_hhmm
 from router_checker.core.scheduler import (
@@ -69,6 +70,7 @@ class Settings:
     test_all_interval_h: int = DEFAULT_TEST_ALL_INTERVAL_H
     auto_switch: bool = False
     connection: LinkChoice = LinkChoice.AUTO  # which adapter to check
+    middle_router: str = ""  # "host:port" of your middle router; "" when there is none
     retention_days: int = DEFAULT_RETENTION_DAYS
     check_on_network_change: bool = True
     first_run_done: bool = False
@@ -91,6 +93,8 @@ class Settings:
             raise ValueError("alert counts and cooldown must be at least 1")
         if self.retention_days < 1:
             raise ValueError("history retention must be at least 1 day")
+        if self.middle_router and parse_endpoint(self.middle_router) is None:
+            raise ValueError("the middle router must look like 192.168.8.1:8080")
 
     def router(self, router_id: str) -> Router | None:
         return next((r for r in self.routers if r.id == router_id), None)
@@ -108,13 +112,19 @@ class Settings:
         return replace(self, routers=tuple(r for r in self.routers if r.id != router_id))
 
     def with_linked_macs(self, routers: Iterable[Router]) -> Settings:
-        """Add MACs the engine linked, keeping every other change made meanwhile."""
+        """Add MACs (and middle-router details) the app learned, keeping every other
+        change made meanwhile."""
         result = self
         for router in routers:
             existing = result.router(router.id)
             if existing is not None:
-                result = result.with_router(existing.with_macs(*router.macs))
+                result = result.with_router(existing.with_learned(router))
         return result
+
+    @property
+    def middle(self) -> Endpoint | None:
+        """The middle router, when one is set up."""
+        return parse_endpoint(self.middle_router) if self.middle_router else None
 
 
 def _router_to_json(r: Router) -> dict[str, Any]:
@@ -124,6 +134,8 @@ def _router_to_json(r: Router) -> dict[str, Any]:
         "color": r.color,
         "ssid": r.ssid,
         "macs": [str(m) for m in r.macs],
+        "address": r.address,
+        "middle_bssid": str(r.middle_bssid) if r.middle_bssid else None,
     }
 
 
@@ -134,6 +146,8 @@ def _router_from_json(d: dict[str, Any]) -> Router:
         color=str(d["color"]),
         ssid=d.get("ssid") or None,
         macs=tuple(MacAddress.parse(m) for m in d.get("macs", [])),
+        address=d.get("address") or None,
+        middle_bssid=MacAddress.parse(d["middle_bssid"]) if d.get("middle_bssid") else None,
     )
 
 
@@ -174,6 +188,7 @@ def settings_to_json(s: Settings) -> dict[str, Any]:
         "test_all_interval_h": s.test_all_interval_h,
         "auto_switch": s.auto_switch,
         "connection": s.connection.value,
+        "middle_router": s.middle_router,
         "retention_days": s.retention_days,
         "check_on_network_change": s.check_on_network_change,
         "first_run_done": s.first_run_done,
@@ -206,6 +221,8 @@ def settings_from_json(data: dict[str, Any]) -> Settings:
     ):
         if key in data:
             kwargs[key] = bool(data[key])
+    if isinstance(data.get("middle_router"), str):
+        kwargs["middle_router"] = data["middle_router"].strip()
     if data.get("connection") in {c.value for c in LinkChoice}:
         kwargs["connection"] = LinkChoice(data["connection"])
     if "targets" in data:

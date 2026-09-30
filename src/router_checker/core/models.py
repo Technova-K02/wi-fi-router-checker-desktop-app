@@ -81,6 +81,8 @@ class Router:
     color: str
     ssid: str | None = None
     macs: tuple[MacAddress, ...] = ()
+    address: str | None = None  # its own IP, seen from behind your middle router
+    middle_bssid: MacAddress | None = None  # the Wi-Fi MAC the middle router last joined
 
     def __post_init__(self) -> None:
         if not self.name.strip():
@@ -104,6 +106,15 @@ class Router:
 
     def with_macs(self, *new: MacAddress) -> Router:
         return replace(self, macs=_unique((*self.macs, *new)))
+
+    def with_learned(self, other: Router) -> Router:
+        """Add what the app learned about ``other`` (the same router): MACs, and its
+        address and Wi-Fi MAC behind the middle router."""
+        return replace(
+            self.with_macs(*other.macs),
+            address=other.address or self.address,
+            middle_bssid=other.middle_bssid or self.middle_bssid,
+        )
 
 
 def _unique(macs: Iterable[MacAddress]) -> tuple[MacAddress, ...]:
