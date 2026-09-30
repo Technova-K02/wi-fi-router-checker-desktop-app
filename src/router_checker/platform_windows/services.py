@@ -42,3 +42,10 @@ class SocketDnsService:
 
 def open_location_settings() -> None:
     os.startfile("ms-settings:privacy-location")  # type: ignore[attr-defined]
+
+
+def set_app_user_model_id(app_id: str) -> None:
+    """Give the process its own taskbar identity (and later, toast identity)."""
+    import ctypes
+
+    ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(ctypes.c_wchar_p(app_id))

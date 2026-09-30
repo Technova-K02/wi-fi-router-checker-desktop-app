@@ -416,6 +416,20 @@ class WindowsWifiService:
         finally:
             _wlan.WlanFreeMemory(ptr)
 
+    def location_allowed(self) -> bool:
+        """Probe the permission with the cached BSS list (no new scan)."""
+        with self._lock:
+            guid = self._interface()
+            ptr = POINTER(WLAN_BSS_LIST)()
+            code = _wlan.WlanGetNetworkBssList(
+                self._client(), byref(guid), None, DOT11_BSS_TYPE_ANY, False, None, byref(ptr)
+            )
+            if code == ERROR_ACCESS_DENIED:
+                return False
+            _check(code, "WlanGetNetworkBssList")
+            _wlan.WlanFreeMemory(ptr)
+            return True
+
     def saved_profiles(self) -> list[str]:
         with self._lock:
             guid = self._interface()
