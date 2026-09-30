@@ -73,3 +73,14 @@ A Windows 11 desktop app that monitors several Wi-Fi routers I have access to, s
 - Run `uv run pytest` and `uv run ruff check` before saying a task is done, and report the real results.
 - Use git with small commits and clear messages.
 - If something is unclear, ask instead of guessing.
+
+## Decisions log (agreed in chat; newest last)
+- Phase 1 (2026-09-29): the routers are separate Wi-Fi networks (different SSIDs), each with its own internet connection. "Popularity" means how busy a router is.
+- Scoring, "for now": loss 0% scores 100 and 20% or more scores 0; jitter 0 ms to 50 ms; latency 20 ms to 200 ms (median of the internet targets' medians); RSSI -50 dBm to -85 dBm; recent checks weigh more with a 30-min half-life. Gateway p95 is only used by the unstable rule.
+- The jitter rule uses the worse of gateway jitter and the targets' mean jitter. A gateway that never answers ping while the internet works counts as "silent" and its loss is ignored.
+- Scans also match a BSSID that differs from a router's MAC only in the last byte (lowest priority). Targets are IPv4 addresses or host names; no IPv6 yet.
+- Git author for this repo: talent <talent@email.com> (repo-local config).
+- Phase 2 (2026-09-29): personal use for now, so PySide6-Fluent-Widgets under GPLv3 is fine. Revisit before handing the app to others.
+- Status colors, always with a glyph and text: green = stable (score 60+); yellow = one unstable check not yet confirmed, recovering, or score under 60; red = unstable 2 checks in a row, router not responding, or internet provider problem; grey = not connected, unknown network, no data, or the check failed.
+- Re-check soon after Windows switches networks (route-change notification, 5 s settle, only if the gateway IP/MAC changed). On by default, with an on/off switch in Settings. The user asked for that switch, so give other automatic behaviors one too.
+- Until Phase 3 brings windows-toasts, alerts use the tray icon's basic notifications.
