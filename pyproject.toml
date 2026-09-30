@@ -1,0 +1,35 @@
+[project]
+name = "router-checker"
+version = "0.1.0"
+description = "Windows 11 app that monitors several Wi-Fi routers and warns when the current one becomes unstable."
+readme = "README.md"
+authors = [
+    { name = "talent", email = "talent@email.com" }
+]
+requires-python = ">=3.13"
+dependencies = []
+
+[project.scripts]
+router-checker = "router_checker.cli:main"
+
+[build-system]
+requires = ["uv_build>=0.12.21,<0.13.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "ruff>=0.16.9",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "SIM", "RUF"]
