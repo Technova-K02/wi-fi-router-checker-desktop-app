@@ -327,6 +327,13 @@ class SqliteHistoryStore:
             rows = self._db.execute(query, (*params, limit)).fetchall()
         return [Event(_dt(r["ts"]), r["router_id"], r["kind"], r["message"]) for r in rows]
 
+    def last_event(self, kind: str) -> Event | None:
+        with self._lock:
+            r = self._db.execute(
+                "SELECT * FROM events WHERE kind = ? ORDER BY ts DESC, id DESC LIMIT 1", (kind,)
+            ).fetchone()
+        return None if r is None else Event(_dt(r["ts"]), r["router_id"], r["kind"], r["message"])
+
     # --- retention ----------------------------------------------------------
 
     def purge(self, before: datetime) -> None:

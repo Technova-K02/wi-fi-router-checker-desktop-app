@@ -26,7 +26,7 @@ def test_defaults() -> None:
     assert s.pings_per_target == 10
     assert s.thresholds == Thresholds(5.0, 100.0, 30.0)
     assert s.retention_days == 30
-    assert not s.scheduled_test_all
+    assert not s.scheduled_test_all and s.test_all_interval_h == 2
 
 
 def test_round_trip(tmp_path) -> None:
@@ -63,6 +63,7 @@ def test_partial_and_unknown_keys() -> None:
         {"pings_per_target": 0},
         {"retention_days": 0},
         {"alert_cooldown_min": 0},
+        {"test_all_interval_h": 3},
     ],
 )
 def test_validation(changes) -> None:
@@ -139,3 +140,11 @@ def test_quiet_hours_json() -> None:
     )
     with pytest.raises(ValueError):
         settings_from_json({"quiet_hours": {"enabled": True, "start": "25:00"}})
+
+
+def test_test_all_schedule_round_trip(tmp_path) -> None:
+    path = tmp_path / "s.json"
+    save_settings(path, Settings(scheduled_test_all=True, test_all_interval_h=8))
+    loaded = load_settings(path)
+    assert loaded.scheduled_test_all and loaded.test_all_interval_h == 8
+    assert settings_from_json({}).test_all_interval_h == 2

@@ -16,6 +16,7 @@ from router_checker.core.models import (
     DnsResult,
     GatewayInfo,
     Router,
+    SavedNetwork,
     ScanEntry,
     Verdict,
     WifiConnection,
@@ -157,6 +158,44 @@ class FakeNetInfo:
 
 
 @dataclass
+class FakeSwitcher:
+    """Connecting changes what FakeWifi and FakeNetInfo report, as Windows would.
+    Unknown or ``unreachable`` profiles leave Wi-Fi disconnected."""
+
+    wifi: FakeWifi
+    netinfo: FakeNetInfo
+    networks: dict[str, tuple[WifiConnection, GatewayInfo]] = field(default_factory=dict)
+    saved: list[SavedNetwork] = field(default_factory=list)
+    unreachable: set[str] = field(default_factory=set)
+    calls: list[str] = field(default_factory=list)
+    on_connect: object = None  # called with the profile name before connecting
+
+    def saved_networks(self) -> list[SavedNetwork]:
+        return list(self.saved)
+
+    def connect(self, profile_name: str) -> None:
+        self.calls.append(f"connect {profile_name}")
+        if callable(self.on_connect):
+            self.on_connect(profile_name)
+        if profile_name in self.unreachable or profile_name not in self.networks:
+            self.wifi.connection, self.netinfo.gateway = None, None
+            return
+        self.wifi.connection, self.netinfo.gateway = self.networks[profile_name]
+
+    def disconnect(self) -> None:
+        self.calls.append("disconnect")
+        self.wifi.connection, self.netinfo.gateway = None, None
+
+
+@dataclass
+class FakeIdle:
+    seconds: float = 0.0
+
+    def idle_seconds(self) -> float:
+        return self.seconds
+
+
+@dataclass
 class FakeNotifier:
     alerts: list[Alert] = field(default_factory=list)
 
@@ -173,6 +212,10 @@ def gateway_info(ip: str = "192.168.1.1", gw_mac: str | None = "B0-0A-D5-9A-7B-B
 GW = "192.168.1.1"
 ZTE_LAN = "B0-0A-D5-9A-7B-B4"
 ZTE_BSSID = "B0-0A-D5-9A-7B-B8"
+NB_GW = "10.0.0.1"
+NB_LAN = "22-22-22-22-22-20"
+NB_BSSID = "22-22-22-22-22-22"
+CAFE_BSSID = "33-33-33-33-33-33"
 GOOD = [10.0, 12.0, 11.0, 10.0]
 
 
@@ -183,36 +226,61 @@ def sample_routers() -> tuple[Router, Router, Router]:
     return zte, neighbor, gone
 
 
+def zte_connection() -> tuple[WifiConnection, GatewayInfo]:
+    return WifiConnection("ZTE-Home", mac(ZTE_BSSID), 90, "ZTE-Home"), gateway_info(GW, ZTE_LAN)
+
+
+def neighbor_connection() -> tuple[WifiConnection, GatewayInfo]:
+    return WifiConnection("Neighbor", mac(NB_BSSID), 70, "Neighbor"), gateway_info(NB_GW, NB_LAN)
+
+
 def network_parts() -> dict[str, object]:
-    """Fake services for the engine: connected to the ZTE, everything answering."""
+    """Fake services for the engine: connected to the ZTE, everything answering.
+
+    Windows has saved "ZTE-Home", "Neighbor" and "Gone"; the switcher can connect to
+    the first two.
+    """
     from router_checker.core.storage import SqliteHistoryStore
 
+    zte_conn, zte_gw = zte_connection()
+    wifi = FakeWifi(
+        connection=zte_conn,
+        entries=[
+            entry(
+                ZTE_BSSID,
+                "ZTE-Home",
+                rssi=-50,
+                freq=5180,
+                channel=36,
+                band=Band.GHZ_5,
+                load=BssLoad(2, 20),
+            ),
+            entry(NB_BSSID, "Neighbor", rssi=-60),
+            entry(CAFE_BSSID, "Cafe", rssi=-70, channel=36, freq=5180, band=Band.GHZ_5),
+        ],
+    )
+    netinfo = FakeNetInfo(zte_gw)
+    switcher = FakeSwitcher(
+        wifi,
+        netinfo,
+        networks={"ZTE-Home": (zte_conn, zte_gw), "Neighbor": neighbor_connection()},
+        saved=[SavedNetwork(n, n) for n in ("ZTE-Home", "Neighbor", "Gone")],
+    )
     return {
-        "wifi": FakeWifi(
-            connection=WifiConnection("ZTE-Home", mac(ZTE_BSSID), 90),
-            entries=[
-                entry(
-                    ZTE_BSSID,
-                    "ZTE-Home",
-                    rssi=-50,
-                    freq=5180,
-                    channel=36,
-                    band=Band.GHZ_5,
-                    load=BssLoad(2, 20),
-                ),
-                entry("22-22-22-22-22-22", "Neighbor", rssi=-60),
-                entry(
-                    "33-33-33-33-33-33", "Cafe", rssi=-70, channel=36, freq=5180, band=Band.GHZ_5
-                ),
-            ],
+        "wifi": wifi,
+        "ping": FakePing(
+            {GW: [2.0], NB_GW: [4.0], "1.1.1.1": GOOD, "8.8.8.8": GOOD, "142.250.0.1": GOOD}
         ),
-        "ping": FakePing({GW: [2.0], "1.1.1.1": GOOD, "8.8.8.8": GOOD, "142.250.0.1": GOOD}),
         "dns": FakeDns({"google.com": "142.250.0.1"}),
-        "netinfo": FakeNetInfo(gateway_info(GW, ZTE_LAN)),
+        "netinfo": netinfo,
         "store": SqliteHistoryStore(":memory:"),
         "clock": FakeClock(),
         "notifier": FakeNotifier(),
+        "switcher": switcher,
     }
+
+
+ENGINE_PARTS = ("wifi", "ping", "dns", "netinfo", "store", "clock", "notifier")
 
 
 def make_engine(settings, **overrides):
@@ -220,4 +288,4 @@ def make_engine(settings, **overrides):
 
     parts = network_parts()
     parts.update(overrides)
-    return CheckEngine(settings, **parts), parts
+    return CheckEngine(settings, **{k: parts[k] for k in ENGINE_PARTS}), parts

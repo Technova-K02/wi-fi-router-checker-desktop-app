@@ -10,6 +10,7 @@ from router_checker.core.wifi_info import (
     parse_bss_load,
     quality_to_rssi,
     same_channel_count,
+    ssid_from_profile_xml,
 )
 
 
@@ -96,3 +97,25 @@ def test_quality_to_rssi() -> None:
     assert quality_to_rssi(0) == -100
     assert quality_to_rssi(60) == -70
     assert quality_to_rssi(150) == -50
+
+
+PROFILE = """<?xml version="1.0"?>
+<WLANProfile xmlns="http://www.microsoft.com/networking/WLAN/profile/v1">
+  <name>{profile}</name>
+  <SSIDConfig><SSID>{ssid}</SSID></SSIDConfig>
+  <MSM><security><sharedKey><keyType>passPhrase</keyType><protected>true</protected>
+  <keyMaterial>01000000D08C9DDF0115D1118C7A00C04FC297EB</keyMaterial></sharedKey></security></MSM>
+</WLANProfile>"""
+
+
+def test_ssid_from_profile_xml() -> None:
+    both = "<hex>436166C3A9</hex><name>Caf?</name>"  # the hex has the real bytes
+    assert ssid_from_profile_xml(PROFILE.format(profile="Cafe 2", ssid=both)) == "Café"
+    only_name = PROFILE.format(profile="Home", ssid="<name>Home</name>")
+    assert ssid_from_profile_xml(only_name) == "Home"
+    bad_hex = PROFILE.format(profile="X", ssid="<hex>zz</hex><name>X</name>")
+    assert ssid_from_profile_xml(bad_hex) == "X"
+    assert ssid_from_profile_xml(PROFILE.format(profile="X", ssid="")) is None
+    no_ssid = PROFILE.replace("<SSIDConfig><SSID>{ssid}</SSID></SSIDConfig>", "")
+    assert ssid_from_profile_xml(no_ssid.format(profile="X")) is None
+    assert ssid_from_profile_xml("not xml") is None

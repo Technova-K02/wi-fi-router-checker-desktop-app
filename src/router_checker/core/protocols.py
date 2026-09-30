@@ -17,6 +17,7 @@ from router_checker.core.models import (
     HourlyAggregate,
     Recommendation,
     Router,
+    SavedNetwork,
     ScanEntry,
     ScanObservation,
     Score,
@@ -120,16 +121,29 @@ class HistoryStore(Protocol):
 
     def events(self, router_id: str | None, limit: int) -> list[Event]: ...
 
+    def last_event(self, kind: str) -> Event | None: ...
+
     def purge(self, before: datetime) -> None: ...
 
 
 class RouterSwitcher(Protocol):
-    """Connects to another router with a profile Windows already saved (Phase 4/5)."""
+    """Connects to another router with a profile Windows already saved. Passwords
+    stay in Windows: nothing here reads or stores one."""
 
-    def saved_profiles(self) -> list[str]: ...
+    def saved_networks(self) -> list[SavedNetwork]: ...
 
     def connect(self, profile_name: str) -> None:
         """Start connecting; returns without waiting for an IP address."""
+        ...
+
+    def disconnect(self) -> None:
+        """Disconnect the Wi-Fi adapter."""
+        ...
+
+
+class IdleMonitor(Protocol):
+    def idle_seconds(self) -> float:
+        """Seconds since the last keyboard or mouse input."""
         ...
 
 

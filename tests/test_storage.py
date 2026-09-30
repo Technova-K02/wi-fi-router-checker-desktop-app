@@ -148,3 +148,12 @@ def test_upgrades_schema_1_database(tmp_path) -> None:
     s.add_scores(T0, [("r1", Score(90, False))])
     assert s.scores("r1", T0)[0].value == 90
     s.close()
+
+
+def test_last_event_of_a_kind(store) -> None:
+    assert store.last_event("test_all") is None
+    store.add_event(Event(T0, None, "test_all", "first"))
+    store.add_event(Event(T0 + timedelta(minutes=1), "r1", "tested", "a router"))
+    store.add_event(Event(T0 + timedelta(minutes=2), None, "test_all", "second"))
+    store.add_event(Event(T0 + timedelta(minutes=3), "r1", "unstable", "later"))
+    assert store.last_event("test_all").message == "second"

@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 from collections.abc import Iterator, Sequence
+from xml.etree import ElementTree
 
 from router_checker.core.mac import MacAddress
 from router_checker.core.models import Band, BssLoad, Router, ScanEntry
 
 IE_SSID = 0
 IE_BSS_LOAD = 11
+_PROFILE_NS = "{http://www.microsoft.com/networking/WLAN/profile/v1}"
 
 
 def iter_ies(data: bytes) -> Iterator[tuple[int, bytes]]:
@@ -104,6 +106,28 @@ def same_channel_count(
         for e in entries
         if e.channel == entry.channel and e.band is entry.band and e.bssid not in excluded
     )
+
+
+def ssid_from_profile_xml(xml: str) -> str | None:
+    """The Wi-Fi name a saved profile connects to (``SSIDConfig/SSID``), or None.
+
+    Only the name is read; the rest of the profile, including its key, is ignored.
+    ``hex`` (the raw bytes, decoded like scan results) wins over ``name``.
+    """
+    try:
+        root = ElementTree.fromstring(xml)
+    except ElementTree.ParseError:
+        return None
+    ssid = root.find(f"{_PROFILE_NS}SSIDConfig/{_PROFILE_NS}SSID")
+    if ssid is None:
+        return None
+    raw = ssid.findtext(f"{_PROFILE_NS}hex")
+    if raw:
+        try:
+            return bytes.fromhex(raw.strip()).decode("utf-8", errors="replace")
+        except ValueError:
+            pass
+    return ssid.findtext(f"{_PROFILE_NS}name") or None
 
 
 def quality_to_rssi(quality: int) -> int:

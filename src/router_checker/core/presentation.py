@@ -40,6 +40,14 @@ from router_checker.core.popularity import PopularTimes, busy_level
 from router_checker.core.quiet_hours import QuietHours, format_hhmm
 from router_checker.core.scoring import LABEL_GOOD
 from router_checker.core.series import Series
+from router_checker.core.switching import (
+    SKIP_TEXTS,
+    Progress,
+    Stage,
+    SwitchResult,
+    TestAllPlan,
+    TestAllResult,
+)
 
 DASH = "\N{EN DASH}"
 DAYS = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
@@ -336,7 +344,12 @@ def targets_text(report: CycleReport | None) -> str:
     return "\n".join(lines)
 
 
-def tray_tooltip(report: CycleReport | None, status: Status, checking: bool = False) -> str:
+def tray_tooltip(
+    report: CycleReport | None,
+    status: Status,
+    checking: bool = False,
+    activity: str | None = None,  # e.g. Test all's progress; replaces "Checking now…"
+) -> str:
     lines = ["Router Checker"]
     router = report.match.router if report else None
     lines.append(f"{router.name}: {status.title}" if router else status.title)
@@ -347,10 +360,177 @@ def tray_tooltip(report: CycleReport | None, status: Status, checking: bool = Fa
         lines.append(
             f"{score}Gateway {fmt_ms(metrics.gateway_ms)} · Internet {fmt_ms(metrics.internet_ms)}"
         )
-    if checking:
+    if activity:
+        lines.append(activity)
+    elif checking:
         lines.append("Checking now…")
     text = "\n".join(lines)
     return text if len(text) <= TOOLTIP_MAX else text[: TOOLTIP_MAX - 1] + "…"
+
+
+# --- Test all and switching -----------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class Message:
+    """A dialog, info bar or notification: level, title and text."""
+
+    level: StatusLevel
+    title: str
+    text: str
+    restore_failed: bool = False  # the original connection couldn't be restored
+
+
+def join_names(names: Sequence[str]) -> str:
+    """ "A", "A and B", "A, B and C"."""
+    if len(names) <= 1:
+        return "".join(names)
+    return f"{', '.join(names[:-1])} and {names[-1]}"
+
+
+def fmt_duration(seconds: float) -> str:
+    minutes = math.ceil(seconds / 60)
+    return "about a minute" if minutes <= 1 else f"about {minutes} minutes"
+
+
+def _quoted(ssid: str) -> str:
+    return f"“{ssid}”"
+
+
+def confirm_test_all(plan: TestAllPlan) -> Message:
+    """The question before Test all starts, or why it can't."""
+    skipped = [f"• {s.router.name}: {SKIP_TEXTS[s.reason]}" for s in plan.skipped]
+    if plan.blocker is not None:
+        return Message(StatusLevel.WARNING, "Test all can't run", plan.blocker)
+    if not plan.to_test:
+        text = "\n".join(
+            [
+                "Test all switches only to routers that have a Wi-Fi name, are in range, "
+                "and are saved in Windows.",
+                "",
+                *skipped,
+            ]
+        )
+        return Message(StatusLevel.UNKNOWN, "No other router to test", text)
+    origin = plan.origin
+    back = f"reconnects to {_quoted(origin.ssid)}" if origin else "disconnects Wi-Fi again"
+    names = [c.router.name for c in plan.to_test]
+    if plan.current is not None:
+        names.append(f"{plan.current.name} (you're on it, so no switch)")
+    lines = [
+        f"Router Checker connects to each router in turn, tests it, then {back}. "
+        f"Your internet drops for a few seconds at each switch. "
+        f"This takes {fmt_duration(plan.estimated_seconds)}.",
+        "",
+        f"To test: {join_names(names)}.",
+    ]
+    if skipped:
+        lines += ["Skipped:", *skipped]
+    return Message(StatusLevel.UNKNOWN, "Test all routers?", "\n".join(lines))
+
+
+def progress_text(progress: Progress | None) -> str:
+    if progress is None:
+        return "Starting Test all…"
+    position = f"({progress.step} of {progress.total})"
+    if progress.stage is Stage.CONNECTING:
+        return f"Connecting to {progress.name} {position}…"
+    if progress.stage is Stage.TESTING:
+        return f"Testing {progress.name} {position}…"
+    return f"Reconnecting to {_quoted(progress.name)}…"
+
+
+def progress_steps(progress: Progress | None, total: int) -> tuple[int, int]:
+    """(done, all) steps for a progress bar: connect and test for every router, then
+    reconnecting and the check of the router you're on."""
+    steps = 2 * total + 2
+    if progress is None:
+        return 0, steps
+    if progress.stage is Stage.RESTORING:
+        return 2 * total, steps
+    return 2 * (progress.step - 1) + (progress.stage is Stage.TESTING), steps
+
+
+def summarize_test_all(
+    result: TestAllResult | None, report: CycleReport | None, error: str | None = None
+) -> Message:
+    """How Test all went, after the final check of the router you're on.
+
+    ``result`` is None when the run failed (``error``) before it could report.
+    """
+    now_on = report.connection.ssid if report and report.connection else None
+    if result is None:
+        where = f" You're on {_quoted(now_on)}." if now_on else ""
+        return Message(StatusLevel.BAD, "Test all stopped", f"{error or 'It failed'}.{where}")
+    origin = result.plan.origin
+    if not result.restored and not result.exited:
+        if origin is None:
+            return Message(
+                StatusLevel.WARNING,
+                "Wi-Fi is still connected",
+                "Test all couldn't disconnect Wi-Fi again, as it was before.",
+                restore_failed=True,
+            )
+        return Message(
+            StatusLevel.BAD,
+            f"Couldn't reconnect to {_quoted(origin.ssid)}",
+            f"Test all couldn't switch back. Connect to {_quoted(origin.ssid)} "
+            "from the Wi-Fi menu on the taskbar.",
+            restore_failed=True,
+        )
+
+    tested = [o.router for o in result.tested]
+    current = report.match.router if report and report.record else None
+    if current is not None and all(r.id != current.id for r in tested):
+        tested.append(current)
+    parts = [f"Tested {join_names([r.name for r in tested])}." if tested else "Nothing was tested."]
+    for outcome in result.failed:
+        parts.append(f"Couldn't connect to {outcome.router.name} ({outcome.problem}).")
+    best = _best_tested(report, {r.id for r in tested})
+    if best is not None:
+        router, score = best
+        mine = " (the one you're on)" if current is not None and router.id == current.id else ""
+        parts.append(f"Best: {router.name}{mine}, score {score.value}.")
+    if origin is None:
+        parts.append("Wi-Fi is disconnected again.")
+    else:
+        parts.append(f"Back on {_quoted(origin.ssid)}.")
+    title = "Test all cancelled" if result.cancelled else "Test all finished"
+    level = StatusLevel.WARNING if result.cancelled or result.failed else StatusLevel.GOOD
+    return Message(level, title, " ".join(parts))
+
+
+def _best_tested(report: CycleReport | None, ids: set[str]) -> tuple[Router, Score] | None:
+    if report is None:
+        return None
+    measured = [
+        (s.router, s.score)
+        for s in report.statuses
+        if s.router.id in ids and s.score is not None and not s.score.estimated
+    ]
+    return max(measured, key=lambda item: item[1].value) if measured else None
+
+
+def switch_summary(result: SwitchResult) -> Message:
+    name = result.router.name
+    if result.ok:
+        return Message(StatusLevel.GOOD, f"Switched to {name}", "Checking it now.")
+    problem = result.problem or "It failed"
+    if result.restored is None:  # nothing was changed
+        return Message(StatusLevel.WARNING, f"Can't switch to {name}", problem)
+    problem = f"{problem[:1].upper()}{problem[1:]}."
+    origin = result.origin
+    if result.restored:
+        back = f" Back on {_quoted(origin.ssid)}." if origin else ""
+        return Message(StatusLevel.WARNING, f"Couldn't switch to {name}", problem + back)
+    where = _quoted(origin.ssid) if origin else "a network"
+    return Message(
+        StatusLevel.BAD,
+        f"Couldn't switch to {name}",
+        f"{problem} Couldn't reconnect to {where} either. "
+        "Connect from the Wi-Fi menu on the taskbar.",
+        restore_failed=True,
+    )
 
 
 # --- nearby networks (Add router) ----------------------------------------------------

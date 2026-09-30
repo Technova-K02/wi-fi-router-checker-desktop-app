@@ -191,6 +191,45 @@ class CheckEngine:
             signal_quality=connection.signal_quality if connection else None,
         )
 
+    def test_other(
+        self,
+        router: Router,
+        connection: WifiConnection,
+        gateway: GatewayInfo,
+        stop: threading.Event | None = None,
+    ) -> tuple[CheckRecord, Router | None]:
+        """Full test of a router that Test all switched to, saved like a check.
+
+        No scan and no alerts: you aren't using this router. Returns the record and
+        the router with newly linked MACs, if any. Raises CheckCancelled once ``stop``
+        is set, before anything is saved.
+        """
+        now = self._clock.now()
+        rssi = quality_to_rssi(connection.signal_quality)
+        test = self.full_test(gateway, router, connection, rssi, now, stop)
+        linked: Router | None = None
+        match = identify_current(self._settings.routers, connection, gateway)
+        if match.router is not None and match.router.id == router.id and match.macs_to_link:
+            linked = self._link(match.router, match, now)
+        record = self._save_test(test)
+        self._store.add_hourly(router.id, now, None, record.score)
+        return record, linked
+
+    def _link(self, router: Router, match: Match, now: datetime) -> Router:
+        """Add the MACs ``match`` learned to ``router`` and log it."""
+        linked = router.with_macs(*match.macs_to_link)
+        self.settings = self._settings.with_router(linked)
+        macs = ", ".join(str(m) for m in match.macs_to_link)
+        self._store.add_event(Event(now, linked.id, "linked", f"Linked {macs} to {linked.name}"))
+        return linked
+
+    def _save_test(self, test: FullTestResult) -> CheckRecord:
+        s = self._settings
+        record = to_record(test, s.thresholds, s.pings_per_target)
+        record = replace(record, score=check_score(record))
+        self._store.add_check(record)
+        return record
+
     # --- cycle --------------------------------------------------------------
 
     def run_cycle(self, stop: threading.Event | None = None) -> CycleReport:
@@ -224,20 +263,13 @@ class CheckEngine:
         # Link newly learned MACs to the current router.
         linked: list[Router] = []
         if current is not None and match.macs_to_link:
-            current = current.with_macs(*match.macs_to_link)
-            s = s.with_router(current)
-            self.settings = s
+            current = self._link(current, match, now)
+            s = self._settings
             linked.append(current)
-            macs = ", ".join(str(m) for m in match.macs_to_link)
-            self._store.add_event(
-                Event(now, current.id, "linked", f"Linked {macs} to {current.name}")
-            )
 
         record: CheckRecord | None = None
         if test is not None:
-            record = to_record(test, s.thresholds, s.pings_per_target)
-            record = replace(record, score=check_score(record))
-            self._store.add_check(record)
+            record = self._save_test(test)
 
         # Passive observations of every router in the scan.
         observations: dict[str, ScanObservation] = {}
@@ -294,7 +326,10 @@ class CheckEngine:
             better = s.router(recommendation.router_id) if recommendation else None
             if alert is not None and alert.kind is AlertKind.UNSTABLE and better is not None:
                 alert = replace(
-                    alert, recommended_name=better.name, recommended_score=recommendation.score
+                    alert,
+                    recommended_name=better.name,
+                    recommended_score=recommendation.score,
+                    recommended_id=better.id,
                 )
             if alert is not None:
                 self._store.add_event(

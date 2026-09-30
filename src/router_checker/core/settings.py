@@ -25,7 +25,12 @@ from router_checker.core.alerts import (
 from router_checker.core.mac import MacAddress
 from router_checker.core.models import Router
 from router_checker.core.quiet_hours import QuietHours, format_hhmm, parse_hhmm
-from router_checker.core.scheduler import DEFAULT_INTERVAL_MIN, INTERVAL_CHOICES_MIN
+from router_checker.core.scheduler import (
+    DEFAULT_INTERVAL_MIN,
+    DEFAULT_TEST_ALL_INTERVAL_H,
+    INTERVAL_CHOICES_MIN,
+    TEST_ALL_INTERVAL_CHOICES_H,
+)
 
 DEFAULT_TARGETS = ("1.1.1.1", "8.8.8.8", "google.com")
 DEFAULT_PINGS = 10
@@ -62,6 +67,7 @@ class Settings:
     quiet_hours: QuietHours = field(default_factory=QuietHours)
     start_with_windows: bool = False
     scheduled_test_all: bool = False
+    test_all_interval_h: int = DEFAULT_TEST_ALL_INTERVAL_H
     retention_days: int = DEFAULT_RETENTION_DAYS
     check_on_network_change: bool = True
     first_run_done: bool = False
@@ -70,6 +76,10 @@ class Settings:
     def __post_init__(self) -> None:
         if self.interval_min not in INTERVAL_CHOICES_MIN:
             raise ValueError(f"interval must be one of {INTERVAL_CHOICES_MIN} minutes")
+        if self.test_all_interval_h not in TEST_ALL_INTERVAL_CHOICES_H:
+            raise ValueError(
+                f"Test all interval must be one of {TEST_ALL_INTERVAL_CHOICES_H} hours"
+            )
         if any(not t.strip() for t in self.targets):
             raise ValueError("targets must not be empty strings")
         if not 1 <= self.pings_per_target <= 100:
@@ -161,6 +171,7 @@ def settings_to_json(s: Settings) -> dict[str, Any]:
         },
         "start_with_windows": s.start_with_windows,
         "scheduled_test_all": s.scheduled_test_all,
+        "test_all_interval_h": s.test_all_interval_h,
         "retention_days": s.retention_days,
         "check_on_network_change": s.check_on_network_change,
         "first_run_done": s.first_run_done,
@@ -179,6 +190,7 @@ def settings_from_json(data: dict[str, Any]) -> Settings:
         "unstable_checks",
         "recovery_checks",
         "alert_cooldown_min",
+        "test_all_interval_h",
         "retention_days",
     ):
         if key in data:

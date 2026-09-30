@@ -6,6 +6,9 @@ import pytest
 
 from fakes import (
     GW,
+    NB_BSSID,
+    NB_GW,
+    NB_LAN,
     T0,
     ZTE_BSSID,
     ZTE_LAN,
@@ -13,6 +16,7 @@ from fakes import (
     FakeWifi,
     mac,
     make_engine,
+    neighbor_connection,
     sample_routers,
 )
 from router_checker.core.errors import CheckCancelled
@@ -237,6 +241,29 @@ def test_an_unstable_alert_names_a_better_router(routers) -> None:
     assert report.alert.kind is AlertKind.UNSTABLE
     assert report.recommendation.router_id == "nb"
     assert report.alert.recommended_name == "Neighbor"
+    assert report.alert.recommended_id == "nb"
     assert report.alert.recommended_score == report.recommendation.score
     event = parts["store"].events("zte", 1)[0]
     assert event.message.endswith(report.alert.suggestion)
+
+
+def test_testing_another_router_saves_a_check_but_never_alerts(routers) -> None:
+    engine, parts = make(Settings(pings_per_target=4, routers=routers, unstable_checks=1))
+    parts["ping"].replies[NB_GW] = [4.0, None]  # half the pings to its gateway get lost
+    record, linked = engine.test_other(routers[1], *neighbor_connection())
+    assert (record.router_id, record.ssid, record.verdict) == ("nb", "Neighbor", Verdict.UNSTABLE)
+    assert record.rssi == -65  # from the signal quality: there is no scan
+    assert parts["notifier"].alerts == [] and parts["store"].events("nb", 5)[0].kind == "linked"
+    assert set(linked.macs) == {mac(NB_LAN), mac(NB_BSSID)}
+    assert engine.settings.router("nb") == linked
+    assert parts["store"].recent_checks(5, "nb") == [record]
+    assert parts["store"].hourly("nb", T0)[0].score_avg == pytest.approx(record.score)
+
+
+def test_testing_another_router_can_be_stopped(routers) -> None:
+    engine, parts = make(Settings(pings_per_target=4, routers=routers))
+    stop = threading.Event()
+    stop.set()
+    with pytest.raises(CheckCancelled):
+        engine.test_other(routers[1], *neighbor_connection(), stop=stop)
+    assert parts["store"].recent_checks(5) == [] and parts["store"].events(None, 5) == []

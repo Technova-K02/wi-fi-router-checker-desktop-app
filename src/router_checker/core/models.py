@@ -174,6 +174,14 @@ class WifiConnection:
 
 
 @dataclass(frozen=True, slots=True)
+class SavedNetwork:
+    """A Wi-Fi profile Windows has saved. Its password stays in Windows."""
+
+    profile_name: str
+    ssid: str | None  # the Wi-Fi name it connects to; None if it couldn't be read
+
+
+@dataclass(frozen=True, slots=True)
 class GatewayInfo:
     """Default gateway of the Wi-Fi adapter (works without location permission)."""
 
@@ -270,6 +278,7 @@ class Alert:
     reasons: tuple[InstabilityReason, ...] = ()
     recommended_name: str | None = None  # a router that scores clearly better right now
     recommended_score: Score | None = None
+    recommended_id: str | None = None
 
     @property
     def title(self) -> str:
