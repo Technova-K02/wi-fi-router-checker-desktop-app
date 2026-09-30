@@ -214,7 +214,7 @@ def cmd_check(app: App, args: argparse.Namespace) -> int:
     try:
         report = app.engine(settings, store).run_cycle()
         if report.linked:
-            app.save(_merge_routers(app.load(), report.settings))
+            app.save(app.load().with_linked_macs(report.linked))
         print_report(report)
     finally:
         store.close()
@@ -232,7 +232,7 @@ def cmd_watch(app: App, args: argparse.Namespace) -> int:
         while True:
             report = engine.run_cycle()
             if report.linked:
-                app.save(_merge_routers(app.load(), report.settings))
+                app.save(app.load().with_linked_macs(report.linked))
             print_report(report)
             while (wait := seconds_until(report.next_check_at, engine_now())) > 0:
                 time.sleep(min(wait, 1.0))
@@ -392,15 +392,6 @@ def _replace(settings: Settings, **changes: object) -> Settings:
     from dataclasses import replace
 
     return replace(settings, **changes)
-
-
-def _merge_routers(on_disk: Settings, updated: Settings) -> Settings:
-    """Apply linked MACs to the settings on disk without overwriting other changes."""
-    for router in updated.routers:
-        existing = on_disk.router(router.id)
-        if existing is not None:
-            on_disk = on_disk.with_router(existing.with_macs(*router.macs))
-    return on_disk
 
 
 def build_parser() -> argparse.ArgumentParser:

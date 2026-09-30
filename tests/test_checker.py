@@ -3,74 +3,31 @@ from dataclasses import replace
 import pytest
 
 from fakes import (
-    FakeClock,
-    FakeDns,
+    GW,
+    ZTE_BSSID,
+    ZTE_LAN,
     FakeNetInfo,
-    FakeNotifier,
-    FakePing,
     FakeWifi,
-    entry,
-    gateway_info,
     mac,
+    make_engine,
+    sample_routers,
 )
-from router_checker.core.checker import CheckEngine
 from router_checker.core.matching import MatchMethod
 from router_checker.core.models import (
     AlertKind,
-    Band,
-    BssLoad,
     BusyLevel,
     Router,
     RouterState,
     Verdict,
-    WifiConnection,
 )
 from router_checker.core.settings import Settings
-from router_checker.core.storage import SqliteHistoryStore
 
-GW = "192.168.1.1"
-ZTE_LAN = "B0-0A-D5-9A-7B-B4"
-ZTE_BSSID = "B0-0A-D5-9A-7B-B8"
-GOOD = [10.0, 12.0, 11.0, 10.0]
-
-
-def make(settings: Settings, **overrides):
-    parts = {
-        "wifi": FakeWifi(
-            connection=WifiConnection("ZTE-Home", mac(ZTE_BSSID), 90),
-            entries=[
-                entry(
-                    ZTE_BSSID,
-                    "ZTE-Home",
-                    rssi=-50,
-                    freq=5180,
-                    channel=36,
-                    band=Band.GHZ_5,
-                    load=BssLoad(2, 20),
-                ),
-                entry("22-22-22-22-22-22", "Neighbor", rssi=-60),
-                entry(
-                    "33-33-33-33-33-33", "Cafe", rssi=-70, channel=36, freq=5180, band=Band.GHZ_5
-                ),
-            ],
-        ),
-        "ping": FakePing({GW: [2.0], "1.1.1.1": GOOD, "8.8.8.8": GOOD, "142.250.0.1": GOOD}),
-        "dns": FakeDns({"google.com": "142.250.0.1"}),
-        "netinfo": FakeNetInfo(gateway_info(GW, ZTE_LAN)),
-        "store": SqliteHistoryStore(":memory:"),
-        "clock": FakeClock(),
-        "notifier": FakeNotifier(),
-    }
-    parts.update(overrides)
-    return CheckEngine(settings, **parts), parts
+make = make_engine
 
 
 @pytest.fixture
 def routers():
-    zte = Router("zte", "ZTE", "#0078D4", macs=(mac(ZTE_LAN),))
-    neighbor = Router("nb", "Neighbor", "#107C10", ssid="Neighbor")
-    gone = Router("gone", "Gone", "#D83B01", ssid="Gone")
-    return zte, neighbor, gone
+    return sample_routers()
 
 
 def test_full_cycle(routers) -> None:
@@ -198,3 +155,44 @@ def test_settings_update_applies_to_alert_engine(routers) -> None:
     engine.settings = replace(engine.settings, unstable_checks=3, alert_cooldown_min=30)
     assert engine._alerts.unstable_checks == 3
     assert engine._alerts.cooldown.total_seconds() == 1800
+
+
+def test_scores_are_stored_for_every_scored_router(routers) -> None:
+    engine, parts = make(Settings(pings_per_target=4, routers=routers))
+    report = engine.run_cycle()
+    store = parts["store"]
+    since = report.timestamp
+    zte_points = store.scores("zte", since)
+    assert [(p.value, p.estimated) for p in zte_points] == [(report.statuses[0].score.value, False)]
+    assert store.scores("nb", since)[0].estimated
+    assert store.scores("gone", since) == []  # not seen, no score
+
+
+def test_confirmed_and_recovering_flags(routers) -> None:
+    engine, parts = make(Settings(pings_per_target=4, routers=routers))
+    ping, clock = parts["ping"], parts["clock"]
+    ping.replies[GW] = [2.0, None]
+    first = engine.run_cycle()
+    assert not first.confirmed_unstable and not first.recovering
+    clock.advance(1)
+    assert engine.run_cycle().confirmed_unstable
+    ping.replies[GW] = [2.0]
+    clock.advance(1)
+    third = engine.run_cycle()
+    assert third.recovering and not third.confirmed_unstable
+    clock.advance(1)
+    assert not engine.run_cycle().recovering
+
+
+def test_target_the_ping_service_rejects_counts_as_lost(routers) -> None:
+    class PickyPing:
+        def ping(self, address, count, timeout_ms, spacing_ms):
+            if address == "8.8.8.8":
+                raise OSError("unsupported address")
+            return [2.0] * count
+
+    engine, _ = make(Settings(pings_per_target=4, routers=routers), ping=PickyPing())
+    report = engine.run_cycle()
+    by_target = {t.target: t for t in report.test.targets}
+    assert by_target["8.8.8.8"].ping.all_lost
+    assert not by_target["1.1.1.1"].ping.all_lost

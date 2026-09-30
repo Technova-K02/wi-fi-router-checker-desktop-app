@@ -26,6 +26,7 @@ from router_checker.core.models import (
     ScanObservation,
     Score,
     TargetResult,
+    Verdict,
     WifiConnection,
 )
 from router_checker.core.popularity import busyness
@@ -73,6 +74,8 @@ class CycleReport:
     unstable: bool
     next_check_at: datetime
     linked: list[Router] = field(default_factory=list)
+    confirmed_unstable: bool = False  # unstable for `unstable_checks` checks in a row
+    recovering: bool = False  # stable again, "back to normal" not confirmed yet
 
     @property
     def current(self) -> RouterStatus | None:
@@ -127,7 +130,12 @@ class CheckEngine:
             address = dns.addresses[0]
         else:
             dns, address = None, target
-        samples = self._ping.ping(address, s.pings_per_target, s.ping_timeout_ms, s.ping_spacing_ms)
+        try:
+            samples = self._ping.ping(
+                address, s.pings_per_target, s.ping_timeout_ms, s.ping_spacing_ms
+            )
+        except (OSError, ValueError):  # e.g. an address the ping service can't handle
+            samples = [None] * s.pings_per_target
         return TargetResult(target, address, summarize(samples), dns)
 
     def full_test(
@@ -242,12 +250,11 @@ class CheckEngine:
                     is_current=is_current,
                 )
             )
-            self._store.add_hourly(
-                router.id,
-                now,
-                obs.busyness.value if obs else None,
-                record.score if is_current and record else None,
-            )
+            current_score = record.score if is_current and record else None
+            if obs is not None or current_score is not None:
+                busy_value = obs.busyness.value if obs else None
+                self._store.add_hourly(router.id, now, busy_value, current_score)
+        self._store.add_scores(now, [(st.router.id, st.score) for st in statuses if st.score])
 
         # Alerts for the current router.
         alert: Alert | None = None
@@ -262,6 +269,11 @@ class CheckEngine:
                 if self._notifier is not None and s.notifications_enabled:
                     self._notifier.notify(alert)
         unstable = current is not None and self._alerts.is_unstable(current.id)
+        confirmed_unstable = recovering = False
+        if current is not None and record is not None:
+            snap = self._alerts.snapshot(current.id)
+            confirmed_unstable = snap.bad_streak >= self._alerts.unstable_checks
+            recovering = snap.alerting and record.verdict is Verdict.OK
 
         recommendation = recommend(scored, current.id if current else None, now)
         if recommendation is not None:
@@ -286,6 +298,8 @@ class CheckEngine:
             unstable=unstable,
             next_check_at=next_check_at(now, now, s.interval_min, unstable),
             linked=linked,
+            confirmed_unstable=confirmed_unstable,
+            recovering=recovering,
         )
 
     # --- helpers ------------------------------------------------------------

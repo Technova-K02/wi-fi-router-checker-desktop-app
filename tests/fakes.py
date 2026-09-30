@@ -14,6 +14,7 @@ from router_checker.core.models import (
     CheckRecord,
     DnsResult,
     GatewayInfo,
+    Router,
     ScanEntry,
     Verdict,
     WifiConnection,
@@ -93,6 +94,25 @@ class FakeWifi:
     def saved_profiles(self) -> list[str]:
         return list(self.profiles)
 
+    def location_allowed(self) -> bool:
+        return not self.denied
+
+
+@dataclass
+class FakeWatcher:
+    started: bool = False
+    changed: bool = False
+
+    def start(self) -> None:
+        self.started = True
+
+    def stop(self) -> None:
+        self.started = False
+
+    def take_change(self) -> bool:
+        changed, self.changed = self.changed, False
+        return changed
+
 
 @dataclass
 class FakePing:
@@ -137,3 +157,58 @@ class FakeNotifier:
 
 def gateway_info(ip: str = "192.168.1.1", gw_mac: str | None = "B0-0A-D5-9A-7B-B4") -> GatewayInfo:
     return GatewayInfo("{GUID}", "Wi-Fi", "192.168.1.50", ip, mac(gw_mac) if gw_mac else None)
+
+
+# --- a small simulated network: the ZTE router plus two neighbours ------------------
+
+GW = "192.168.1.1"
+ZTE_LAN = "B0-0A-D5-9A-7B-B4"
+ZTE_BSSID = "B0-0A-D5-9A-7B-B8"
+GOOD = [10.0, 12.0, 11.0, 10.0]
+
+
+def sample_routers() -> tuple[Router, Router, Router]:
+    zte = Router("zte", "ZTE", "#0078D4", macs=(mac(ZTE_LAN),))
+    neighbor = Router("nb", "Neighbor", "#107C10", ssid="Neighbor")
+    gone = Router("gone", "Gone", "#D83B01", ssid="Gone")
+    return zte, neighbor, gone
+
+
+def network_parts() -> dict[str, object]:
+    """Fake services for the engine: connected to the ZTE, everything answering."""
+    from router_checker.core.storage import SqliteHistoryStore
+
+    return {
+        "wifi": FakeWifi(
+            connection=WifiConnection("ZTE-Home", mac(ZTE_BSSID), 90),
+            entries=[
+                entry(
+                    ZTE_BSSID,
+                    "ZTE-Home",
+                    rssi=-50,
+                    freq=5180,
+                    channel=36,
+                    band=Band.GHZ_5,
+                    load=BssLoad(2, 20),
+                ),
+                entry("22-22-22-22-22-22", "Neighbor", rssi=-60),
+                entry(
+                    "33-33-33-33-33-33", "Cafe", rssi=-70, channel=36, freq=5180, band=Band.GHZ_5
+                ),
+            ],
+        ),
+        "ping": FakePing({GW: [2.0], "1.1.1.1": GOOD, "8.8.8.8": GOOD, "142.250.0.1": GOOD}),
+        "dns": FakeDns({"google.com": "142.250.0.1"}),
+        "netinfo": FakeNetInfo(gateway_info(GW, ZTE_LAN)),
+        "store": SqliteHistoryStore(":memory:"),
+        "clock": FakeClock(),
+        "notifier": FakeNotifier(),
+    }
+
+
+def make_engine(settings, **overrides):
+    from router_checker.core.checker import CheckEngine
+
+    parts = network_parts()
+    parts.update(overrides)
+    return CheckEngine(settings, **parts), parts

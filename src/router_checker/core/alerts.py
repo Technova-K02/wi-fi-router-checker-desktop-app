@@ -102,6 +102,13 @@ def diagnose(
     return Diagnosis(verdict, tuple(reasons), gateway_silent)
 
 
+@dataclass(frozen=True, slots=True)
+class AlertSnapshot:
+    bad_streak: int
+    good_streak: int
+    alerting: bool  # an "unstable" alert went out and "back to normal" has not yet
+
+
 @dataclass(slots=True)
 class _RouterAlertState:
     bad_streak: int = 0
@@ -121,6 +128,12 @@ class AlertEngine:
         """True while the last check was unstable or recovery is not confirmed yet."""
         state = self._states.get(router_id)
         return state is not None and (state.bad_streak > 0 or state.alerting)
+
+    def snapshot(self, router_id: str) -> AlertSnapshot:
+        state = self._states.get(router_id)
+        if state is None:
+            return AlertSnapshot(0, 0, False)
+        return AlertSnapshot(state.bad_streak, state.good_streak, state.alerting)
 
     def process(
         self,

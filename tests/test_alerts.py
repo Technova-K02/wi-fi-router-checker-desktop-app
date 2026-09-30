@@ -3,7 +3,7 @@ from datetime import timedelta
 import pytest
 
 from fakes import T0
-from router_checker.core.alerts import AlertEngine, Thresholds, diagnose
+from router_checker.core.alerts import AlertEngine, AlertSnapshot, Thresholds, diagnose
 from router_checker.core.models import AlertKind, InstabilityReason, TargetResult, Verdict
 from router_checker.core.stats import summarize
 
@@ -145,3 +145,10 @@ def test_internet_down_alert_title() -> None:
     alert = engine.process("r1", "Home", T0, Verdict.INTERNET_DOWN, (R.ALL_TARGETS_FAILED,))
     assert alert.title == "Internet provider problem on Home"
     assert alert.message == "All internet targets failing"
+
+
+def test_snapshot_reports_streaks() -> None:
+    engine = AlertEngine()
+    assert engine.snapshot("r1") == AlertSnapshot(0, 0, False)
+    feed(engine, [BAD, BAD, OK])
+    assert engine.snapshot("r1") == AlertSnapshot(0, 1, True)

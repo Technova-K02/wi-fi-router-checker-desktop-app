@@ -6,8 +6,11 @@ settings files keep loading after upgrades.
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import os
+import re
+from collections.abc import Iterable
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
@@ -28,6 +31,19 @@ DEFAULT_PING_TIMEOUT_MS = 1000
 DEFAULT_PING_SPACING_MS = 200
 DEFAULT_RETENTION_DAYS = 30
 
+_HOST_LABEL = r"(?!-)[A-Za-z0-9-]{1,63}(?<!-)"
+_HOSTNAME = re.compile(rf"^(?=.{{1,253}}$){_HOST_LABEL}(\.{_HOST_LABEL})*\.?$")
+
+
+def is_valid_target(text: str) -> bool:
+    """An IPv4 address or a host name such as ``google.com`` (no IPv6 yet)."""
+    text = text.strip()
+    try:
+        ipaddress.IPv4Address(text)
+    except ValueError:
+        return bool(_HOSTNAME.match(text)) and not text.replace(".", "").isdigit()
+    return True
+
 
 @dataclass(frozen=True, slots=True)
 class Settings:
@@ -45,6 +61,8 @@ class Settings:
     start_with_windows: bool = False
     scheduled_test_all: bool = False
     retention_days: int = DEFAULT_RETENTION_DAYS
+    check_on_network_change: bool = True
+    first_run_done: bool = False
     routers: tuple[Router, ...] = ()
 
     def __post_init__(self) -> None:
@@ -77,6 +95,15 @@ class Settings:
 
     def without_router(self, router_id: str) -> Settings:
         return replace(self, routers=tuple(r for r in self.routers if r.id != router_id))
+
+    def with_linked_macs(self, routers: Iterable[Router]) -> Settings:
+        """Add MACs the engine linked, keeping every other change made meanwhile."""
+        result = self
+        for router in routers:
+            existing = result.router(router.id)
+            if existing is not None:
+                result = result.with_router(existing.with_macs(*router.macs))
+        return result
 
 
 def _router_to_json(r: Router) -> dict[str, Any]:
@@ -119,6 +146,8 @@ def settings_to_json(s: Settings) -> dict[str, Any]:
         "start_with_windows": s.start_with_windows,
         "scheduled_test_all": s.scheduled_test_all,
         "retention_days": s.retention_days,
+        "check_on_network_change": s.check_on_network_change,
+        "first_run_done": s.first_run_done,
         "routers": [_router_to_json(r) for r in s.routers],
     }
 
@@ -138,7 +167,13 @@ def settings_from_json(data: dict[str, Any]) -> Settings:
     ):
         if key in data:
             kwargs[key] = int(data[key])
-    for key in ("notifications_enabled", "start_with_windows", "scheduled_test_all"):
+    for key in (
+        "notifications_enabled",
+        "start_with_windows",
+        "scheduled_test_all",
+        "check_on_network_change",
+        "first_run_done",
+    ):
         if key in data:
             kwargs[key] = bool(data[key])
     if "targets" in data:

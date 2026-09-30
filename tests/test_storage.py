@@ -10,6 +10,8 @@ from router_checker.core.models import (
     Event,
     InstabilityReason,
     ScanObservation,
+    Score,
+    ScorePoint,
     Verdict,
 )
 from router_checker.core.storage import SqliteHistoryStore
@@ -102,4 +104,39 @@ def test_file_store_persists(tmp_path) -> None:
     s.close()
     s = SqliteHistoryStore(path)
     assert len(s.checks("r1", T0)) == 1
+    s.close()
+
+
+def test_scores_round_trip_and_purge(store) -> None:
+    store.add_scores(T0, [("r1", Score(80, False)), ("r2", Score(55, True))])
+    store.add_scores(T0 + timedelta(minutes=5), [("r1", Score(70, False))])
+    assert [(p.value, p.estimated) for p in store.scores("r1", T0)] == [(80, False), (70, False)]
+    assert store.scores("r2", T0)[0] == ScorePoint(T0, 55, True)
+    assert store.scores("r1", T0 + timedelta(minutes=1))[0].value == 70
+    store.purge(T0 + timedelta(minutes=1))
+    assert store.scores("r2", T0) == []
+
+
+def test_recent_checks_newest_first_all_networks(store) -> None:
+    store.add_check(record(timestamp=T0))
+    store.add_check(record(timestamp=T0 + timedelta(minutes=1), router_id=None, ssid="Cafe"))
+    store.add_check(record(timestamp=T0 + timedelta(minutes=2), router_id="r2"))
+    assert [c.router_id for c in store.recent_checks(10)] == ["r2", None, "r1"]
+    assert [c.router_id for c in store.recent_checks(1)] == ["r2"]
+    assert [c.timestamp for c in store.recent_checks(10, "r1")] == [T0]
+
+
+def test_upgrades_schema_1_database(tmp_path) -> None:
+    import sqlite3
+
+    path = tmp_path / "old.db"
+    SqliteHistoryStore(path).close()
+    db = sqlite3.connect(path)  # turn it back into a schema-1 file (no scores table)
+    db.execute("DROP TABLE scores")
+    db.execute("PRAGMA user_version = 1")
+    db.commit()
+    db.close()
+    s = SqliteHistoryStore(path)
+    s.add_scores(T0, [("r1", Score(90, False))])
+    assert s.scores("r1", T0)[0].value == 90
     s.close()

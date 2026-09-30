@@ -9,6 +9,7 @@ from router_checker.core.models import Router
 from router_checker.core.settings import (
     DEFAULT_TARGETS,
     Settings,
+    is_valid_target,
     load_settings,
     save_settings,
     settings_from_json,
@@ -82,3 +83,44 @@ def test_router_add_replace_remove() -> None:
     assert s.routers == (a2,)
     assert len(a2.macs) == 1
     assert s.without_router(a.id).routers == ()
+
+
+def test_new_flags_round_trip(tmp_path) -> None:
+    s = Settings(check_on_network_change=False, first_run_done=True)
+    path = tmp_path / "s.json"
+    save_settings(path, s)
+    loaded = load_settings(path)
+    assert not loaded.check_on_network_change and loaded.first_run_done
+    old_file = settings_from_json({"interval_min": 5})
+    assert old_file.check_on_network_change and not old_file.first_run_done
+
+
+def test_with_linked_macs_keeps_other_changes() -> None:
+    a = Router.create("A")
+    b = Router.create("B")
+    engine_copy = Settings(routers=(a.with_macs(mac("11-11-11-11-11-11")), b))
+    user_edited = Settings(interval_min=15, routers=(replace(a, name="Renamed"),))  # B deleted
+    merged = user_edited.with_linked_macs([engine_copy.routers[0], engine_copy.routers[1]])
+    assert merged.interval_min == 15
+    assert merged.routers[0].name == "Renamed"
+    assert merged.routers[0].macs == (mac("11-11-11-11-11-11"),)
+    assert len(merged.routers) == 1  # a deleted router is not resurrected
+
+
+@pytest.mark.parametrize(
+    ("text", "ok"),
+    [
+        ("1.1.1.1", True),
+        ("google.com", True),
+        ("dns.google", True),
+        ("localhost", True),
+        (" 8.8.8.8 ", True),
+        ("2606:4700::1111", False),  # IPv6 not supported yet
+        ("1.2.3", False),
+        ("-bad.com", False),
+        ("exa mple.com", False),
+        ("", False),
+    ],
+)
+def test_is_valid_target(text: str, ok: bool) -> None:
+    assert is_valid_target(text) is ok

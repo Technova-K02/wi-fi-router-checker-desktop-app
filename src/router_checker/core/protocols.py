@@ -19,6 +19,7 @@ from router_checker.core.models import (
     ScanEntry,
     ScanObservation,
     Score,
+    ScorePoint,
     WifiConnection,
 )
 
@@ -40,6 +41,10 @@ class WifiService(Protocol):
 
     def saved_profiles(self) -> list[str]: ...
 
+    def location_allowed(self) -> bool:
+        """Quick permission probe without a scan (raises WifiUnavailableError)."""
+        ...
+
 
 class PingService(Protocol):
     def ping(
@@ -59,6 +64,22 @@ class NetworkInfoService(Protocol):
         ...
 
 
+class NetworkChangeWatcher(Protocol):
+    """Tells when Windows changed network routes (e.g. switched Wi-Fi).
+
+    Callbacks arrive on system threads, so implementations only record the
+    change; the app polls ``take_change`` from its own thread.
+    """
+
+    def start(self) -> None: ...
+
+    def stop(self) -> None: ...
+
+    def take_change(self) -> bool:
+        """True once for each burst of changes since the previous call."""
+        ...
+
+
 class NotificationService(Protocol):
     def notify(self, alert: Alert) -> None: ...
 
@@ -67,6 +88,12 @@ class HistoryStore(Protocol):
     def add_check(self, record: CheckRecord) -> None: ...
 
     def checks(self, router_id: str, since: datetime) -> list[CheckRecord]: ...
+
+    def recent_checks(self, limit: int, router_id: str | None = None) -> list[CheckRecord]: ...
+
+    def add_scores(self, when: datetime, scores: Sequence[tuple[str, Score]]) -> None: ...
+
+    def scores(self, router_id: str, since: datetime) -> list[ScorePoint]: ...
 
     def add_observations(self, observations: Sequence[ScanObservation]) -> None: ...
 

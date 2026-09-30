@@ -22,10 +22,12 @@ from router_checker.core.models import (
     InstabilityReason,
     ScanEntry,
     ScanObservation,
+    Score,
+    ScorePoint,
     Verdict,
 )
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS checks (
@@ -89,6 +91,15 @@ CREATE TABLE IF NOT EXISTS events (
     message TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_events_ts ON events (ts);
+
+CREATE TABLE IF NOT EXISTS scores (
+    id INTEGER PRIMARY KEY,
+    ts REAL NOT NULL,
+    router_id TEXT NOT NULL,
+    score INTEGER NOT NULL,
+    estimated INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_scores_router_ts ON scores (router_id, ts);
 """
 
 
@@ -98,6 +109,29 @@ def _ts(dt: datetime) -> float:
 
 def _dt(ts: float) -> datetime:
     return datetime.fromtimestamp(ts, UTC)
+
+
+def _check_from_row(row: sqlite3.Row) -> CheckRecord:
+    return CheckRecord(
+        timestamp=_dt(row["ts"]),
+        router_id=row["router_id"],
+        ssid=row["ssid"],
+        bssid=row["bssid"],
+        verdict=Verdict[row["verdict"]],
+        reasons=tuple(InstabilityReason[x] for x in json.loads(row["reasons"])),
+        gateway_loss_pct=row["gateway_loss_pct"],
+        gateway_avg_ms=row["gateway_avg_ms"],
+        gateway_p95_ms=row["gateway_p95_ms"],
+        gateway_jitter_ms=row["gateway_jitter_ms"],
+        gateway_silent=bool(row["gateway_silent"]),
+        internet_loss_pct=row["internet_loss_pct"],
+        internet_latency_ms=row["internet_latency_ms"],
+        internet_jitter_ms=row["internet_jitter_ms"],
+        dns_ms=row["dns_ms"],
+        rssi=row["rssi"],
+        signal_quality=row["signal_quality"],
+        score=row["score"],
+    )
 
 
 class SqliteHistoryStore:
@@ -140,29 +174,38 @@ class SqliteHistoryStore:
                 "SELECT * FROM checks WHERE router_id = ? AND ts >= ? ORDER BY ts",
                 (router_id, _ts(since)),
             ).fetchall()
-        return [
-            CheckRecord(
-                timestamp=_dt(row["ts"]),
-                router_id=row["router_id"],
-                ssid=row["ssid"],
-                bssid=row["bssid"],
-                verdict=Verdict[row["verdict"]],
-                reasons=tuple(InstabilityReason[x] for x in json.loads(row["reasons"])),
-                gateway_loss_pct=row["gateway_loss_pct"],
-                gateway_avg_ms=row["gateway_avg_ms"],
-                gateway_p95_ms=row["gateway_p95_ms"],
-                gateway_jitter_ms=row["gateway_jitter_ms"],
-                gateway_silent=bool(row["gateway_silent"]),
-                internet_loss_pct=row["internet_loss_pct"],
-                internet_latency_ms=row["internet_latency_ms"],
-                internet_jitter_ms=row["internet_jitter_ms"],
-                dns_ms=row["dns_ms"],
-                rssi=row["rssi"],
-                signal_quality=row["signal_quality"],
-                score=row["score"],
+        return [_check_from_row(row) for row in rows]
+
+    def recent_checks(self, limit: int, router_id: str | None = None) -> list[CheckRecord]:
+        """Newest first. ``router_id=None`` includes every network, even unknown ones."""
+        query = "SELECT * FROM checks"
+        params: tuple[object, ...] = ()
+        if router_id is not None:
+            query += " WHERE router_id = ?"
+            params = (router_id,)
+        with self._lock:
+            rows = self._db.execute(
+                query + " ORDER BY ts DESC, id DESC LIMIT ?", (*params, limit)
+            ).fetchall()
+        return [_check_from_row(row) for row in rows]
+
+    # --- scores -------------------------------------------------------------
+
+    def add_scores(self, when: datetime, scores: Sequence[tuple[str, Score]]) -> None:
+        rows = [(_ts(when), rid, s.value, int(s.estimated)) for rid, s in scores]
+        with self._lock, self._db:
+            self._db.executemany(
+                "INSERT INTO scores (ts, router_id, score, estimated) VALUES (?, ?, ?, ?)", rows
             )
-            for row in rows
-        ]
+
+    def scores(self, router_id: str, since: datetime) -> list[ScorePoint]:
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT ts, score, estimated FROM scores"
+                " WHERE router_id = ? AND ts >= ? ORDER BY ts",
+                (router_id, _ts(since)),
+            ).fetchall()
+        return [ScorePoint(_dt(r["ts"]), r["score"], bool(r["estimated"])) for r in rows]
 
     # --- scan observations --------------------------------------------------
 
@@ -280,6 +323,6 @@ class SqliteHistoryStore:
     def purge(self, before: datetime) -> None:
         cutoff = _ts(before)
         with self._lock, self._db:
-            for table in ("checks", "observations", "events"):
+            for table in ("checks", "observations", "events", "scores"):
                 self._db.execute(f"DELETE FROM {table} WHERE ts < ?", (cutoff,))
             self._db.execute("DELETE FROM hourly WHERE hour_ts < ?", (int(cutoff) // 3600 * 3600,))

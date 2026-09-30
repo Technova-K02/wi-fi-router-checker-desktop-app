@@ -293,6 +293,13 @@ class Event:
 
 
 @dataclass(frozen=True, slots=True)
+class ScorePoint:
+    timestamp: datetime
+    value: int
+    estimated: bool
+
+
+@dataclass(frozen=True, slots=True)
 class HourlyAggregate:
     router_id: str
     hour_start: datetime
