@@ -335,8 +335,9 @@ def cmd_profiles(_app: App, _args: argparse.Namespace) -> int:
     from router_checker.platform_windows.wlan import WindowsWifiService
 
     with WindowsWifiService() as wifi:
-        for name in wifi.saved_profiles():
-            print(name)
+        for network in wifi.saved_networks():
+            ssid = network.ssid if network.ssid is not None else "(Wi-Fi name unreadable)"
+            print(f"{network.profile_name:<32} -> {ssid}")
     return 0
 
 
@@ -405,7 +406,7 @@ def build_parser() -> argparse.ArgumentParser:
     check.add_argument("--count", type=int, help="pings per target (default from settings)")
     watch = sub.add_parser("watch", help="run checks on the timer")
     watch.add_argument("--interval", type=int, choices=INTERVAL_CHOICES_MIN)
-    sub.add_parser("profiles", help="Wi-Fi profiles saved in Windows")
+    sub.add_parser("profiles", help="Wi-Fi profiles saved in Windows and their Wi-Fi names")
     sub.add_parser("location", help="open the Windows location privacy settings")
 
     routers = sub.add_parser("routers", help="manage your routers")

@@ -15,11 +15,12 @@ from ctypes import POINTER, Structure, byref, c_void_p, wintypes
 
 from router_checker.core.errors import LocationPermissionError, WifiUnavailableError
 from router_checker.core.mac import MacAddress
-from router_checker.core.models import ScanEntry, WifiConnection
+from router_checker.core.models import SavedNetwork, ScanEntry, WifiConnection
 from router_checker.core.wifi_info import (
     band_from_frequency,
     channel_from_frequency,
     parse_bss_load,
+    ssid_from_profile_xml,
 )
 
 ERROR_SUCCESS = 0
@@ -227,6 +228,13 @@ _wlan.WlanConnect.argtypes = [
     c_void_p,
 ]
 _wlan.WlanConnect.restype = wintypes.DWORD
+_wlan.WlanDisconnect.argtypes = [wintypes.HANDLE, POINTER(GUID), c_void_p]
+_wlan.WlanDisconnect.restype = wintypes.DWORD
+_wlan.WlanGetProfile.argtypes = [
+    wintypes.HANDLE, POINTER(GUID), wintypes.LPCWSTR, c_void_p, POINTER(c_void_p),
+    POINTER(wintypes.DWORD), POINTER(wintypes.DWORD),
+]  # fmt: skip
+_wlan.WlanGetProfile.restype = wintypes.DWORD
 _wlan.WlanRegisterNotification.argtypes = [
     wintypes.HANDLE, wintypes.DWORD, wintypes.BOOL, WLAN_NOTIFICATION_CALLBACK, c_void_p,
     c_void_p, POINTER(wintypes.DWORD),
@@ -440,21 +448,45 @@ class WindowsWifiService:
 
     def saved_profiles(self) -> list[str]:
         with self._lock:
-            guid = self._interface()
-            ptr = POINTER(WLAN_PROFILE_INFO_LIST)()
-            _check(
-                _wlan.WlanGetProfileList(self._client(), byref(guid), None, byref(ptr)),
-                "WlanGetProfileList",
-            )
-            try:
-                items = ctypes.cast(
-                    ctypes.addressof(ptr.contents.ProfileInfo), POINTER(WLAN_PROFILE_INFO)
-                )
-                return [items[i].strProfileName for i in range(ptr.contents.dwNumberOfItems)]
-            finally:
-                _wlan.WlanFreeMemory(ptr)
+            return self._profile_names(self._interface())
 
-    # --- RouterSwitcher (used from Phase 4) -----------------------------------
+    def _profile_names(self, guid: GUID) -> list[str]:
+        ptr = POINTER(WLAN_PROFILE_INFO_LIST)()
+        _check(
+            _wlan.WlanGetProfileList(self._client(), byref(guid), None, byref(ptr)),
+            "WlanGetProfileList",
+        )
+        try:
+            items = ctypes.cast(
+                ctypes.addressof(ptr.contents.ProfileInfo), POINTER(WLAN_PROFILE_INFO)
+            )
+            return [items[i].strProfileName for i in range(ptr.contents.dwNumberOfItems)]
+        finally:
+            _wlan.WlanFreeMemory(ptr)
+
+    # --- RouterSwitcher ---------------------------------------------------------
+
+    def saved_networks(self) -> list[SavedNetwork]:
+        """Saved profiles and the Wi-Fi name each one connects to."""
+        with self._lock:
+            guid = self._interface()
+            return [
+                SavedNetwork(name, self._profile_ssid(guid, name))
+                for name in self._profile_names(guid)
+            ]
+
+    def _profile_ssid(self, guid: GUID, name: str) -> str | None:
+        """The Wi-Fi name in a profile's XML. The key is never asked for in plain text
+        (no WLAN_PROFILE_GET_PLAINTEXT_KEY flag); only the name is read, then the XML
+        is freed."""
+        xml = c_void_p()
+        code = _wlan.WlanGetProfile(self._client(), byref(guid), name, None, byref(xml), None, None)
+        if code != ERROR_SUCCESS or not xml.value:
+            return None
+        try:
+            return ssid_from_profile_xml(ctypes.wstring_at(xml.value))
+        finally:
+            _wlan.WlanFreeMemory(xml)
 
     def connect(self, profile_name: str) -> None:
         """Ask Windows to connect with a saved profile; does not wait for an IP."""
@@ -471,3 +503,8 @@ class WindowsWifiService:
             _check(
                 _wlan.WlanConnect(self._client(), byref(guid), byref(params), None), "WlanConnect"
             )
+
+    def disconnect(self) -> None:
+        with self._lock:
+            guid = self._interface()
+            _check(_wlan.WlanDisconnect(self._client(), byref(guid), None), "WlanDisconnect")
