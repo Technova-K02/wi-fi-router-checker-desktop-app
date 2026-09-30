@@ -8,6 +8,7 @@ from collections.abc import Sequence
 from datetime import datetime
 from typing import Protocol
 
+from router_checker.core.auto_switch import CheckView, Decision
 from router_checker.core.models import (
     Alert,
     CheckRecord,
@@ -15,8 +16,6 @@ from router_checker.core.models import (
     Event,
     GatewayInfo,
     HourlyAggregate,
-    Recommendation,
-    Router,
     SavedNetwork,
     ScanEntry,
     ScanObservation,
@@ -148,19 +147,14 @@ class IdleMonitor(Protocol):
 
 
 class SwitchingPolicy(Protocol):
-    """Decides whether to switch automatically (Phase 5).
+    """Decides whether to switch automatically; see ``core.auto_switch`` for the rules."""
 
-    Planned rules: the candidate must be better for 3 checks in a row, a
-    30-minute cooldown between switches, and switching back if the new
-    router fails.
-    """
-
-    def decide(
-        self,
-        now: datetime,
-        current: Router | None,
-        current_score: Score | None,
-        recommendation: Recommendation | None,
-    ) -> Router | None:
-        """The router to switch to, or None to stay."""
+    def observe(self, check: CheckView) -> Decision:
+        """Take one check of the router you're on into account; what to do now."""
         ...
+
+    def switched(
+        self, from_id: str | None, to_id: str, when: datetime, automatic: bool
+    ) -> None: ...
+
+    def switch_failed(self, router_id: str, when: datetime) -> None: ...

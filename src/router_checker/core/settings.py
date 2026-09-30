@@ -68,6 +68,7 @@ class Settings:
     start_with_windows: bool = False
     scheduled_test_all: bool = False
     test_all_interval_h: int = DEFAULT_TEST_ALL_INTERVAL_H
+    auto_switch: bool = False
     retention_days: int = DEFAULT_RETENTION_DAYS
     check_on_network_change: bool = True
     first_run_done: bool = False
@@ -172,6 +173,7 @@ def settings_to_json(s: Settings) -> dict[str, Any]:
         "start_with_windows": s.start_with_windows,
         "scheduled_test_all": s.scheduled_test_all,
         "test_all_interval_h": s.test_all_interval_h,
+        "auto_switch": s.auto_switch,
         "retention_days": s.retention_days,
         "check_on_network_change": s.check_on_network_change,
         "first_run_done": s.first_run_done,
@@ -199,6 +201,7 @@ def settings_from_json(data: dict[str, Any]) -> Settings:
         "notifications_enabled",
         "start_with_windows",
         "scheduled_test_all",
+        "auto_switch",
         "check_on_network_change",
         "first_run_done",
     ):

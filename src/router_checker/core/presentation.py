@@ -17,11 +17,19 @@ from __future__ import annotations
 
 import math
 import statistics
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, tzinfo
 from enum import StrEnum
 
+from router_checker.core.auto_switch import (
+    AVOID_AFTER_FAILURE,
+    BETTER_CHECKS,
+    DOWN_CHECKS,
+    Decision,
+    Reason,
+)
+from router_checker.core.auto_switch import Progress as AutoProgress
 from router_checker.core.checker import CycleReport
 from router_checker.core.mac import MacAddress
 from router_checker.core.models import (
@@ -379,6 +387,7 @@ class Message:
     title: str
     text: str
     restore_failed: bool = False  # the original connection couldn't be restored
+    back_to: str | None = None  # offer to go back to this router (automatic switch)
 
 
 def join_names(names: Sequence[str]) -> str:
@@ -531,6 +540,64 @@ def switch_summary(result: SwitchResult) -> Message:
         "Connect from the Wi-Fi menu on the taskbar.",
         restore_failed=True,
     )
+
+
+# --- automatic switching -------------------------------------------------------------
+
+_VERDICT_WORDS = {
+    Verdict.UNSTABLE: "unstable",
+    Verdict.ROUTER_UNREACHABLE: "not responding",
+    Verdict.INTERNET_DOWN: "no internet",
+}
+
+
+def auto_switch_reason(decision: Decision, names: Mapping[str, str]) -> str:
+    """Why an automatic switch happens, for the event log and the notification."""
+    to = names.get(decision.router_id or "", "the other router")
+    current = names.get(decision.from_id or "", "your router")
+    words = _VERDICT_WORDS.get(decision.verdict, "failing") if decision.verdict else ""
+    if decision.reason is Reason.DOWN:
+        return f"{current} was {words} for {DOWN_CHECKS} checks in a row"
+    if decision.reason is Reason.FAILED_AFTER_SWITCH:
+        return f"{current} was {words} right after the switch"
+    score = decision.score.value if decision.score else None
+    theirs = decision.current_score.value if decision.current_score else None
+    numbers = f" (score {score} vs {theirs})" if score is not None and theirs is not None else ""
+    return f"{to} was clearly better for {BETTER_CHECKS} checks in a row{numbers}"
+
+
+def auto_switch_message(decision: Decision, names: Mapping[str, str]) -> Message:
+    """The notification after an automatic switch that worked."""
+    to = names.get(decision.router_id or "", "the other router")
+    reason = auto_switch_reason(decision, names)
+    if decision.reason is Reason.FAILED_AFTER_SWITCH:
+        hours = round(AVOID_AFTER_FAILURE.total_seconds() / 3600)
+        failed = names.get(decision.from_id or "", "It")
+        return Message(
+            StatusLevel.WARNING,
+            f"Back on {to}",
+            f"{reason[:1].upper()}{reason[1:]}. {failed} won't be picked automatically "
+            f"for {hours} hours.",
+        )
+    return Message(
+        StatusLevel.GOOD,
+        f"Switched to {to}",
+        f"{reason[:1].upper()}{reason[1:]}.",
+        back_to=decision.from_id,
+    )
+
+
+def auto_switch_progress(progress: AutoProgress | None, names: Mapping[str, str]) -> str | None:
+    """A line for the dashboard while automatic switching waits or builds up."""
+    if progress is None:
+        return None
+    if progress.cooldown_left is not None:
+        minutes = max(1, math.ceil(progress.cooldown_left.total_seconds() / 60))
+        return f"Automatic switching pauses for {minutes} more min after the last switch."
+    if progress.router_id is None or not progress.checks:
+        return None
+    name = names.get(progress.router_id, "Another router")
+    return f"{name} has been better for {progress.checks} of {BETTER_CHECKS} checks."
 
 
 # --- nearby networks (Add router) ----------------------------------------------------

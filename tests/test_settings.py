@@ -148,3 +148,10 @@ def test_test_all_schedule_round_trip(tmp_path) -> None:
     loaded = load_settings(path)
     assert loaded.scheduled_test_all and loaded.test_all_interval_h == 8
     assert settings_from_json({}).test_all_interval_h == 2
+
+
+def test_auto_switch_is_off_by_default_and_saved(tmp_path) -> None:
+    assert not Settings().auto_switch and not settings_from_json({}).auto_switch
+    path = tmp_path / "s.json"
+    save_settings(path, Settings(auto_switch=True))
+    assert load_settings(path).auto_switch
