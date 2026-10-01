@@ -46,6 +46,7 @@ from router_checker.core.presentation import (
 )
 from router_checker.core.switching import ON_ETHERNET
 from router_checker.ui.controller import SPARKLINE_SPAN, AppController, RunState, Snapshot
+from router_checker.ui.dialogs.middle_dialog import MiddleRouterDialog, show_middle_test
 from router_checker.ui.pages.base import Page
 from router_checker.ui.shell import open_location_settings
 from router_checker.ui.widgets import (
@@ -68,12 +69,24 @@ STATE_ICONS = {
     RouterState.VISIBLE: FIF.WIFI,
     RouterState.NOT_FOUND: FIF.REMOVE,
     RouterState.UNKNOWN: FIF.QUESTION,
+    RouterState.TESTED: FIF.HISTORY,
+    RouterState.NOT_TESTED: FIF.QUESTION,
 }
 RUN_TITLES = {
     "test_all": "Testing all routers",
     "switch": "Switching networks",
     "recover": "Going back",
 }
+
+
+def middle_suggestion_text(host: str) -> str:
+    return (
+        f"{host} seems to sit between this PC and your routers: another router answers "
+        "behind it. If it's your own router that switches between them, Router Checker "
+        "can find and switch your routers through it."
+    )
+
+
 TEST_ALL_TIP = "Connect to each of your routers in turn and test it (Ctrl+T)"
 TEST_ALL_NEEDS_LOCATION = "Test all needs location access (see the message below)"
 
@@ -419,7 +432,9 @@ class RouterCard(FocusCard):
         else:
             self.state_icon.setIcon(STATE_ICONS[status.state])
             self.state.setText(status.state.value)
-            self.state_note.setText(f"· {state_detail(status.state, location_allowed)}")
+            now = snap.report.timestamp if snap else None
+            detail = state_detail(status.state, location_allowed, status.last_tested, now)
+            self.state_note.setText(f"· {detail}")
         missing_name = (
             status is not None and status.state is RouterState.NOT_FOUND and not router.ssid
         )
@@ -508,6 +523,24 @@ class DashboardPage(Page):
             parent=self.view,
         )
         self.wifi_bar.hide()
+        self.middle_bar = InfoBar(
+            InfoBarIcon.INFORMATION,
+            "A router of yours in between?",
+            "",
+            orient=Qt.Orientation.Vertical,
+            isClosable=False,
+            duration=-1,
+            position=InfoBarPosition.NONE,
+            parent=self.view,
+        )
+        self.middle_setup = PushButton("Set it up…", self.middle_bar)
+        self.middle_setup.clicked.connect(self._set_up_middle)
+        self.middle_dismiss = PushButton("It isn't", self.middle_bar)
+        self.middle_dismiss.setToolTip("Don't suggest this router again")
+        self.middle_dismiss.clicked.connect(controller.dismiss_middle_suggestion)
+        self.middle_bar.addWidget(self.middle_setup)
+        self.middle_bar.addWidget(self.middle_dismiss)
+        self.middle_bar.hide()
 
         self.current = CurrentRouterCard(self.view)
         self.current.addRouterRequested.connect(self.addRouterRequested)
@@ -535,6 +568,7 @@ class DashboardPage(Page):
         self.body.addWidget(self.run_card)
         self.body.addWidget(self.location_bar)
         self.body.addWidget(self.wifi_bar)
+        self.body.addWidget(self.middle_bar)
         self.body.addWidget(self.current)
         self.body.addSpacing(8)
         self.body.addWidget(self.others_title)
@@ -594,8 +628,29 @@ class DashboardPage(Page):
         if wifi_error:
             self.wifi_bar.content = wifi_error[:1].upper() + wifi_error[1:] + "."
             self.wifi_bar._adjustText()
+        suggestion = c.middle_suggestion
+        self.middle_bar.setVisible(suggestion is not None)
+        if suggestion is not None and self.middle_bar.content != (
+            text := middle_suggestion_text(suggestion)
+        ):
+            self.middle_bar.content = text
+            self.middle_bar._adjustText()
         self._sync_cards(snap)
         self._tick()
+
+    def _set_up_middle(self) -> None:
+        host = self.controller.middle_suggestion
+        if host is None:
+            return
+        dialog = MiddleRouterDialog(host, self.window())
+        if not dialog.exec():
+            return
+        endpoint = dialog.endpoint()
+        if endpoint is not None:
+            window = self.window()
+            self.controller.use_middle_router(
+                endpoint, lambda problem: show_middle_test(window, endpoint, problem)
+            )
 
     def _sync_cards(self, snap: Snapshot | None) -> None:
         current_id = snap.report.match.router.id if snap and snap.report.match.router else None

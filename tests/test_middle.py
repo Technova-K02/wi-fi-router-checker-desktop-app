@@ -6,8 +6,8 @@ from router_checker.core.middle import (
     bssid_order,
     colon_mac,
     could_be_middle,
-    gateway_key,
     is_private_ipv4,
+    middle_key,
     middle_suggestion,
     parse_endpoint,
     router_at,
@@ -141,8 +141,8 @@ def test_a_cable_into_an_unknown_private_gateway_could_be_a_middle_router() -> N
 
 
 def test_gateway_key_is_the_mac_or_else_the_address() -> None:
-    assert gateway_key(cable_gateway("192.168.8.1", MIDDLE_MAC)) == MIDDLE_MAC
-    assert gateway_key(cable_gateway("192.168.8.1", None)) == "192.168.8.1"
+    assert middle_key(cable_gateway("192.168.8.1", MIDDLE_MAC)) == MIDDLE_MAC
+    assert middle_key(cable_gateway("192.168.8.1", None)) == "192.168.8.1"
 
 
 def test_a_private_second_hop_suggests_the_gateway() -> None:

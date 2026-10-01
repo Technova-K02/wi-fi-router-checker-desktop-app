@@ -42,6 +42,7 @@ from router_checker.core.quiet_hours import QuietHours
 from router_checker.core.scheduler import INTERVAL_CHOICES_MIN, TEST_ALL_INTERVAL_CHOICES_H
 from router_checker.core.settings import Settings, is_valid_target
 from router_checker.ui.controller import AppController
+from router_checker.ui.dialogs.middle_dialog import show_middle_test
 from router_checker.ui.pages.base import Page
 from router_checker.ui.shell import (
     open_folder,
@@ -443,8 +444,11 @@ class SettingsPage(Page):
             box.valueChanged.connect(self._apply_later)
 
         controller.settingsChanged.connect(self._load)
+        controller.settingsChanged.connect(self._show_middle_hint)
+        controller.checkFinished.connect(self._show_middle_hint)
         controller.locationStatus.connect(self._show_location)
         self._load(controller.settings)
+        self._show_middle_hint()
         self._show_startup()
 
     def _quiet_times(self) -> QWidget:
@@ -547,16 +551,14 @@ class SettingsPage(Page):
 
     def _middle_tested(self, endpoint: Endpoint, problem: str | None) -> None:
         self.middle_test.setEnabled(True)
-        if problem is None:
-            InfoBar.success(
-                "The middle router answers", f"Router Checker can reach it at {endpoint}.",
-                duration=6000, position=InfoBarPosition.TOP, parent=self.window(),
-            )  # fmt: skip
-        else:
-            InfoBar.warning(
-                "No answer from the middle router", f"{endpoint}: {problem}.",
-                duration=8000, position=InfoBarPosition.TOP, parent=self.window(),
-            )  # fmt: skip
+        show_middle_test(self.window(), endpoint, problem)
+
+    def _show_middle_hint(self, *_args: object) -> None:
+        """A middle router the last check spotted: its address as the field's hint."""
+        found = self.controller.middle_suggestion
+        self.middle.setPlaceholderText(
+            f"{found}:port (found on your network)" if found else "e.g. 192.168.8.1:8080"
+        )
 
     def _show_startup(self) -> None:
         """Windows holds this setting (Task Manager can change it too), not settings.json."""

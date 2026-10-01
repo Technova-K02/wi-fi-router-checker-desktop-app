@@ -26,7 +26,7 @@ from router_checker.core.auto_switch import Action, AutoSwitchPolicy, CheckView,
 from router_checker.core.checker import CheckEngine, CycleReport
 from router_checker.core.errors import LocationPermissionError, WifiUnavailableError
 from router_checker.core.export import write_checks_csv
-from router_checker.core.middle import Endpoint
+from router_checker.core.middle import Endpoint, middle_key
 from router_checker.core.middle_switching import (
     MiddleMarkerFile,
     MiddleRunner,
@@ -365,6 +365,37 @@ class AppController(QObject):
         if self.behind_middle:
             return self._middle_runner
         return None if self.on_ethernet else self._runner
+
+    @property
+    def middle_suggestion(self) -> str | None:
+        """The address of a gateway the last check took for a middle router, until one
+        is set up or you said it isn't one."""
+        report = self.last_snapshot.report if self.last_snapshot else None
+        if report is None or report.middle_suggestion is None or report.gateway is None:
+            return None
+        if self._settings.middle is not None:
+            return None
+        if middle_key(report.gateway) in self._settings.middle_dismissed:
+            return None
+        return report.middle_suggestion
+
+    def dismiss_middle_suggestion(self) -> None:
+        """It isn't a middle router: don't suggest this gateway again."""
+        report = self.last_snapshot.report if self.last_snapshot else None
+        if report is None or report.gateway is None:
+            return
+        key = middle_key(report.gateway)
+        if key not in self._settings.middle_dismissed:
+            dismissed = (*self._settings.middle_dismissed, key)
+            self._set_settings(replace(self._settings, middle_dismissed=dismissed))
+
+    def use_middle_router(
+        self, endpoint: Endpoint, on_tested: Callable[[str | None], None]
+    ) -> None:
+        """Set up the middle router, try it, and check again through it."""
+        self._set_settings(replace(self._settings, middle_router=str(endpoint)))
+        self.test_middle_router(endpoint, on_tested)
+        self.check_now()
 
     def test_middle_router(self, endpoint: Endpoint, on_done: Callable[[str | None], None]) -> None:
         """Does the middle router answer? None if it does, else why not (worker thread)."""
@@ -871,9 +902,7 @@ class AppController(QObject):
         candidates = {
             s.router.id: s.score
             for s in report.statuses
-            if s.score is not None
-            and s.router.id in switchable
-            and (current is None or s.router.id != current.id)
+            if s.router.id in switchable and (current is None or s.router.id != current.id)
         }
         decision = self._policy.observe(
             CheckView(

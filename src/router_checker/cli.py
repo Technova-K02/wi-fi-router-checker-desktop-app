@@ -146,6 +146,11 @@ def print_report(report: CycleReport) -> None:
         print(f"Router:   {match.router.name} (matched by {match.method})")
     elif gw:
         print("Router:   not one of your routers. Add it with `router-checker routers add`.")
+    if report.middle_suggestion:
+        print(
+            f"          {report.middle_suggestion} looks like a middle router (another router "
+            "answers behind it). Set it up in the app's Settings > Middle router."
+        )
     if report.linked and match.router:
         new = ", ".join(map(str, match.macs_to_link))
         print(f"          newly linked to {match.router.name}: {new}")

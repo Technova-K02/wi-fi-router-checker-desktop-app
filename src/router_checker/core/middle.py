@@ -104,7 +104,7 @@ def is_private_ipv4(address: str | None) -> bool:
     return any(ip in net for net in _PRIVATE)
 
 
-def gateway_key(gateway: GatewayInfo) -> str:
+def middle_key(gateway: GatewayInfo) -> str:
     """What a dismissed suggestion remembers: the gateway's MAC, else its address."""
     return str(gateway.gateway_mac) if gateway.gateway_mac else gateway.gateway_ip
 
@@ -119,7 +119,7 @@ def could_be_middle(
     private gateway that isn't one of your routers, and not dismissed before."""
     if gateway is None or middle_set or not gateway.wired:
         return False
-    if not is_private_ipv4(gateway.gateway_ip) or gateway_key(gateway) in dismissed:
+    if not is_private_ipv4(gateway.gateway_ip) or middle_key(gateway) in dismissed:
         return False
     mac = gateway.gateway_mac
     return mac is None or not any(mac in r.macs for r in routers)

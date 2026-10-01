@@ -1,6 +1,7 @@
 """Build the real windows with the fake network and render them in both themes."""
 
 from dataclasses import replace
+from datetime import timedelta
 
 import pytest
 from PySide6.QtCore import Qt, QTime, QTimer
@@ -10,6 +11,8 @@ from qfluentwidgets import InfoBar, PushButton, Theme, setTheme
 from fakes import (
     GW,
     MIDDLE,
+    MIDDLE_LAN,
+    T0,
     WIFI_IP,
     ZTE_ADDRESS,
     FakeNetInfo,
@@ -21,8 +24,10 @@ from fakes import (
     middle_parts,
     middle_routers,
     network_parts,
+    record,
     sample_routers,
 )
+from router_checker.core.middle import Endpoint
 from router_checker.core.models import (
     LinkChoice,
     Recommendation,
@@ -30,12 +35,13 @@ from router_checker.core.models import (
     Score,
     WifiConnection,
 )
-from router_checker.core.presentation import Status, StatusLevel, tray_tooltip
+from router_checker.core.presentation import DASH, Status, StatusLevel, tray_tooltip
 from router_checker.core.quiet_hours import QuietHours
 from router_checker.core.settings import Settings
 from router_checker.core.switching import ON_ETHERNET, SwitchTiming
 from router_checker.ui.controller import AppController, Services
 from router_checker.ui.dialogs.first_run import FirstRunDialog
+from router_checker.ui.dialogs.middle_dialog import MiddleRouterDialog
 from router_checker.ui.dialogs.router_dialog import RouterDialog
 from router_checker.ui.main_window import MainWindow
 from router_checker.ui.style import app_icon, status_icon
@@ -500,8 +506,7 @@ def test_a_pc_without_wifi_hides_the_wifi_parts(qtbot, ethernet_pc) -> None:
 # --- a middle router ----------------------------------------------------------------------
 
 
-@pytest.fixture
-def middle_app(qtbot, tmp_path):
+def _behind_middle(qtbot, tmp_path, middle_router: str):
     """On a cable into the middle router, which is on the ZTE."""
     parts = middle_parts()
     services = Services(
@@ -510,7 +515,7 @@ def middle_app(qtbot, tmp_path):
     )  # fmt: skip
     settings = Settings(
         pings_per_target=4, routers=middle_routers(), first_run_done=True,
-        middle_router=f"{MIDDLE}:8080",
+        middle_router=middle_router,
     )  # fmt: skip
     controller = AppController(
         settings, tmp_path / "settings.json", parts["store"], services,
@@ -521,6 +526,17 @@ def middle_app(qtbot, tmp_path):
     yield controller, window, parts
     window.prepare_quit()
     controller.shutdown()
+
+
+@pytest.fixture
+def middle_app(qtbot, tmp_path):
+    yield from _behind_middle(qtbot, tmp_path, f"{MIDDLE}:8080")
+
+
+@pytest.fixture
+def unset_middle_app(qtbot, tmp_path):
+    """The same, but the middle router isn't set up in the app."""
+    yield from _behind_middle(qtbot, tmp_path, "")
 
 
 def test_the_dashboard_behind_the_middle_router(qtbot, middle_app) -> None:
@@ -600,4 +616,57 @@ def test_use_the_router_im_connected_to_behind_the_middle_router(qtbot, middle_a
     dialog.use_current.click()
     qtbot.waitUntil(lambda: dialog.use_current.isEnabled(), timeout=TIMEOUT)
     assert dialog.mac_feedback.text() == "Your middle router is on ZTE, which you've already added."
+    dialog.reject()
+
+
+def test_behind_the_middle_router_the_other_cards_show_tests_through_it(qtbot, middle_app) -> None:
+    controller, window, parts = middle_app
+    parts["store"].add_check(record(router_id="nb", timestamp=T0 - timedelta(minutes=12)))
+    check(qtbot, controller)
+    window.dashboard.refresh()
+    cards = window.dashboard._cards
+    assert (cards["nb"].state.text(), cards["nb"].state_note.text()) == (
+        "Tested",
+        "· through the middle router, 12 min ago",
+    )
+    assert cards["gone"].state.text() == "Not tested"
+    assert cards["nb"].signal.text() == f"Signal {DASH}"  # this PC's scan isn't the middle router's
+
+
+def test_a_middle_router_that_isnt_set_up_is_suggested(qtbot, unset_middle_app) -> None:
+    controller, window, parts = unset_middle_app
+    check(qtbot, controller)
+    bar = window.dashboard.middle_bar
+    assert not bar.isHidden() and controller.middle_suggestion == MIDDLE
+    assert bar.content.startswith(f"{MIDDLE} seems to sit between this PC and your routers")
+    assert window.settings_page.middle.placeholderText() == f"{MIDDLE}:port (found on your network)"
+    assert parts["middle"].calls == []
+
+    controller.use_middle_router(Endpoint(MIDDLE, 8080), lambda _problem: None)
+    qtbot.waitUntil(lambda: controller.behind_middle, timeout=TIMEOUT)
+    assert controller.settings.middle_router == f"{MIDDLE}:8080"
+    assert bar.isHidden() and controller.middle_suggestion is None
+    assert window.settings_page.middle.text() == f"{MIDDLE}:8080"
+    assert window.dashboard.current.name.text() == "ZTE"
+
+
+def test_a_suggestion_can_be_dismissed(qtbot, unset_middle_app) -> None:
+    controller, window, parts = unset_middle_app
+    check(qtbot, controller)
+    window.dashboard.middle_dismiss.click()
+    assert controller.settings.middle_dismissed == (MIDDLE_LAN,)
+    assert window.dashboard.middle_bar.isHidden()
+    hops = len(parts["ping"].hops)
+    check(qtbot, controller)
+    assert len(parts["ping"].hops) == hops  # not looked for again
+
+
+def test_the_middle_router_dialog_asks_for_the_port(qtbot, unset_middle_app) -> None:
+    _, window, _ = unset_middle_app
+    dialog = MiddleRouterDialog(MIDDLE, window)
+    assert dialog.port.text() == "80" and dialog.endpoint() == Endpoint(MIDDLE, 80)
+    dialog.port.setText("8080")
+    assert dialog.validate() and dialog.endpoint() == Endpoint(MIDDLE, 8080)
+    dialog.port.setText("")
+    assert not dialog.validate() and not dialog.error.isHidden()
     dialog.reject()
