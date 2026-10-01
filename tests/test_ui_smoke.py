@@ -586,3 +586,18 @@ def test_the_address_field_is_hidden_without_a_middle_router(qtbot, app_parts) -
     dialog = RouterDialog(controller, parent=window)
     assert dialog.address.isHidden()
     dialog.reject()
+
+
+def test_use_the_router_im_connected_to_behind_the_middle_router(qtbot, middle_app) -> None:
+    controller, window, parts = middle_app
+    parts["ping"].upstream = "172.16.0.1"  # a router that isn't added yet
+    dialog = RouterDialog(controller, parent=window)
+    dialog.use_current.click()
+    qtbot.waitUntil(lambda: dialog.use_current.isEnabled(), timeout=TIMEOUT)
+    assert dialog.address.text() == "172.16.0.1" and dialog._macs == []  # not the middle's MAC
+    assert dialog.mac_feedback.text().startswith("✓ Your middle router is on the router at")
+    parts["ping"].upstream = ZTE_ADDRESS
+    dialog.use_current.click()
+    qtbot.waitUntil(lambda: dialog.use_current.isEnabled(), timeout=TIMEOUT)
+    assert dialog.mac_feedback.text() == "Your middle router is on ZTE, which you've already added."
+    dialog.reject()

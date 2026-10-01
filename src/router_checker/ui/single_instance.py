@@ -14,7 +14,7 @@ from PySide6.QtNetwork import QLocalServer, QLocalSocket
 
 SHOW, EXIT = b"show", b"exit"
 CONNECT_MS = 500
-REPLY_MS = 5000
+REPLY_MS = 10_000  # a busy copy (or PC) can take a few seconds to answer
 
 
 class SingleInstance(QObject):

@@ -36,9 +36,9 @@ from qfluentwidgets import FluentIcon as FIF
 
 from router_checker.core.errors import LocationPermissionError
 from router_checker.core.mac import MacAddress, try_parse_mac
-from router_checker.core.models import DEFAULT_ROUTER_COLORS, GatewayInfo, Router
+from router_checker.core.models import DEFAULT_ROUTER_COLORS, Router
 from router_checker.core.presentation import NearbyNetwork, group_networks
-from router_checker.ui.controller import AppController, ScanResult
+from router_checker.ui.controller import AppController, CurrentRouter, ScanResult
 from router_checker.ui.shell import open_location_settings
 from router_checker.ui.style import text_color
 
@@ -198,10 +198,11 @@ class RouterDialog(MessageBoxBase):
         form.addLayout(current_row, 5, 1)
         form.addLayout(swatch_row, 6, 1)
         form.addWidget(self.address, 7, 1)
+        self.address_label = form.itemAtPosition(7, 0).widget()
         # Only matters behind a middle router (it's learned there, too).
         if controller.settings.middle is None and not (base and base.address):
             self.address.hide()
-            form.itemAtPosition(7, 0).widget().hide()
+            self.address_label.hide()
 
         self.error = BodyLabel("", self)
         self.error.setTextColor(*ERROR_COLORS)
@@ -367,8 +368,12 @@ class RouterDialog(MessageBoxBase):
         self.use_current.setEnabled(False)
         self.controller.current_gateway(self._on_current, self._on_current_error)
 
-    def _on_current(self, gateway: GatewayInfo | None) -> None:
+    def _on_current(self, current: CurrentRouter) -> None:
         self.use_current.setEnabled(True)
+        if current.behind_middle:
+            self._use_address(current.upstream_ip)
+            return
+        gateway = current.gateway
         if gateway is None:
             self._set_feedback("You're not connected to a router right now.", error=True)
             return
@@ -393,6 +398,28 @@ class RouterDialog(MessageBoxBase):
             self._rebuild_macs()
         how = gateway.kind.label
         self._set_feedback(f"✓ Added {mac}, the router you're connected to over {how}.")
+        self._show_error("")
+
+    def _use_address(self, address: str | None) -> None:
+        """Behind the middle router, "the router I'm connected to" is the one it's on."""
+        if address is None:
+            self._set_feedback(
+                "Couldn't tell which router your middle router is on (no second hop).",
+                error=True,
+            )
+            return
+        editing = getattr(self._editing, "id", None)
+        routers = self.controller.settings.routers
+        owner = next((r for r in routers if r.address == address and r.id != editing), None)
+        if owner is not None:
+            self._set_feedback(
+                f"Your middle router is on {owner.name}, which you've already added.", error=True
+            )
+            return
+        self.address.setText(address)
+        self.address.show()
+        self.address_label.show()
+        self._set_feedback(f"✓ Your middle router is on the router at {address}: added it below.")
         self._show_error("")
 
     def _on_current_error(self, exc: BaseException) -> None:

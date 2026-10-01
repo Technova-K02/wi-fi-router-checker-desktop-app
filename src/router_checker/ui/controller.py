@@ -121,6 +121,13 @@ class Services:
 
 
 @dataclass(frozen=True, slots=True)
+class CurrentRouter:
+    gateway: GatewayInfo | None
+    behind_middle: bool = False
+    upstream_ip: str | None = None  # behind the middle router: the router it's on
+
+
+@dataclass(frozen=True, slots=True)
 class Snapshot:
     """Everything the UI shows after one check."""
 
@@ -373,12 +380,20 @@ class AppController(QObject):
 
     def current_gateway(
         self,
-        on_done: Callable[[GatewayInfo | None], None],
+        on_done: Callable[[CurrentRouter], None],
         on_error: Callable[[BaseException], None] | None = None,
     ) -> None:
-        """The router you're connected to right now, Wi-Fi or Ethernet (worker thread)."""
-        netinfo, choice = self._services.netinfo, self._settings.connection
-        self.run_task(lambda: netinfo.gateway(choice), on_done, on_error)
+        """The router you're connected to right now, Wi-Fi or Ethernet, and behind a
+        middle router the address of the router it's on (worker thread)."""
+        netinfo, engine, s = self._services.netinfo, self._engine, self._settings
+
+        def work() -> CurrentRouter:
+            gateway = netinfo.gateway(s.connection)
+            if gateway is not None and s.middle is not None and s.middle.is_gateway(gateway):
+                return CurrentRouter(gateway, True, engine.upstream_address(gateway))
+            return CurrentRouter(gateway)
+
+        self.run_task(work, on_done, on_error)
 
     @property
     def can_start_with_windows(self) -> bool:

@@ -246,8 +246,7 @@ class SettingsPage(Page):
             _card(
                 FIF.IOT,
                 "Middle router",
-                "Your own router between this PC and your routers, which can switch between "
-                "them. Leave empty if you have none.",
+                "Your router between this PC and your routers. Empty if you have none.",
                 self.middle,
                 self.middle_test,
             )
