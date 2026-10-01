@@ -8,6 +8,7 @@ from fakes import (
     CABLE_IP,
     GW,
     MIDDLE,
+    MIDDLE_LAN,
     NB_ADDRESS,
     NB_BSSID,
     NB_GW,
@@ -472,3 +473,54 @@ def test_two_routers_with_the_same_address_cant_be_told_apart() -> None:
     )
     report = engine.run_cycle()
     assert report.match.router is None  # both are at that address now
+
+
+def test_behind_the_middle_router_the_others_show_their_last_test_through_it() -> None:
+    engine, parts = behind()
+    parts["store"].add_check(record(router_id="nb", timestamp=T0 - timedelta(minutes=12)))
+    report = engine.run_cycle()
+    by_id = {s.router.id: s for s in report.statuses}
+    assert by_id["nb"].state is RouterState.TESTED
+    assert by_id["nb"].last_tested == T0 - timedelta(minutes=12)
+    assert by_id["gone"].state is RouterState.NOT_TESTED and by_id["gone"].last_tested is None
+    # This PC's scan shows the Neighbor, but that's not how the middle router sees it.
+    assert all(s.observation is None for s in report.statuses)
+    assert by_id["zte"].last_tested is None
+
+
+# --- spotting a middle router that isn't set up -------------------------------------------
+
+
+def unset(**settings):
+    """On a cable into the middle router, which isn't set up in the app."""
+    return make(
+        Settings(pings_per_target=4, routers=middle_routers(), **settings), **middle_parts()
+    )
+
+
+def test_a_middle_router_that_isnt_set_up_is_suggested() -> None:
+    engine, parts = unset()
+    report = engine.run_cycle()
+    assert report.middle is None and report.match.router is None
+    assert report.middle_suggestion == MIDDLE
+    assert parts["ping"].hops[0] == ("1.1.1.1", 2)
+    assert parts["middle"].calls == []  # nothing is sent to it before you confirm
+
+
+def test_a_dismissed_suggestion_isnt_looked_for_again() -> None:
+    engine, parts = unset(middle_dismissed=(MIDDLE_LAN,))
+    report = engine.run_cycle()
+    assert report.middle_suggestion is None and parts["ping"].hops == []
+
+
+def test_a_cable_straight_into_your_router_suggests_nothing(routers) -> None:
+    engine, parts = make(Settings(pings_per_target=4, routers=routers))
+    parts["netinfo"].cable = cable_gateway(GW, ZTE_LAN)
+    report = engine.run_cycle()
+    assert report.middle_suggestion is None and parts["ping"].hops == []
+
+
+def test_a_public_second_hop_suggests_nothing() -> None:
+    engine, parts = unset()
+    parts["ping"].upstream = "104.186.104.1"
+    assert engine.run_cycle().middle_suggestion is None

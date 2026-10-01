@@ -229,12 +229,21 @@ def score_text(score: Score | None) -> str:
     return f"{'~' if score.estimated else ''}{score.value} · {score.label}"
 
 
-def state_detail(state: RouterState, location_allowed: bool) -> str:
+def state_detail(
+    state: RouterState,
+    location_allowed: bool,
+    last_tested: datetime | None = None,
+    now: datetime | None = None,
+) -> str:
+    if state is RouterState.TESTED and last_tested is not None and now is not None:
+        return f"through the middle router, {fmt_age(last_tested, now)}"
     return {
         RouterState.ONLINE: "connected and tested",
         RouterState.VISIBLE: "in range, not tested",
         RouterState.NOT_FOUND: "not in the last Wi-Fi scan",
         RouterState.UNKNOWN: "location access is off" if not location_allowed else "can't scan",
+        RouterState.TESTED: "through the middle router",
+        RouterState.NOT_TESTED: "Test all tests it through the middle router",
     }[state]
 
 

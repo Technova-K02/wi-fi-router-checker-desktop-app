@@ -198,6 +198,12 @@ def test_texts() -> None:
     assert score_text(None) == DASH
     assert state_detail(RouterState.UNKNOWN, location_allowed=False) == "location access is off"
     assert state_detail(RouterState.VISIBLE, location_allowed=True) == "in range, not tested"
+    now = datetime(2026, 9, 30, 12, 0, tzinfo=UTC)
+    tested = state_detail(RouterState.TESTED, True, now - timedelta(minutes=12), now)
+    assert tested == "through the middle router, 12 min ago"
+    assert state_detail(RouterState.NOT_TESTED, True) == (
+        "Test all tests it through the middle router"
+    )
 
 
 def test_busy_text() -> None:

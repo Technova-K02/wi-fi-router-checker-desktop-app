@@ -19,7 +19,13 @@ from router_checker.core.errors import (
 from router_checker.core.mac import MacAddress
 from router_checker.core.matching import Match, MatchMethod, identify_current, router_state
 from router_checker.core.measurements import to_record
-from router_checker.core.middle import UPSTREAM_HOPS, Endpoint, router_at
+from router_checker.core.middle import (
+    UPSTREAM_HOPS,
+    Endpoint,
+    could_be_middle,
+    middle_suggestion,
+    router_at,
+)
 from router_checker.core.models import (
     Alert,
     AlertKind,
@@ -29,6 +35,7 @@ from router_checker.core.models import (
     GatewayInfo,
     Recommendation,
     Router,
+    RouterState,
     RouterStatus,
     ScanEntry,
     ScanObservation,
@@ -98,6 +105,7 @@ class CycleReport:
     linked: list[Router] = field(default_factory=list)
     middle: Endpoint | None = None  # set when the PC is behind your middle router
     upstream_ip: str | None = None  # then: the router in use, found one hop further
+    middle_suggestion: str | None = None  # a gateway that looks like a middle router
     confirmed_unstable: bool = False  # unstable for `unstable_checks` checks in a row
     recovering: bool = False  # stable again, "back to normal" not confirmed yet
 
@@ -342,6 +350,10 @@ class CheckEngine:
         wired = gateway is not None and gateway.wired
         middle = s.middle if s.middle is not None and s.middle.is_gateway(gateway) else None
         upstream = self.upstream_address(gateway, stop) if middle and gateway else None
+        suggestion: str | None = None
+        if could_be_middle(gateway, s.routers, s.middle is not None, s.middle_dismissed):
+            assert gateway is not None
+            suggestion = middle_suggestion(gateway, self.upstream_address(gateway, stop))
 
         # On a cable the Wi-Fi connection (if any) isn't the one being checked, but
         # a scan still shows the other routers.
@@ -380,9 +392,10 @@ class CheckEngine:
         if test is not None:
             record = self._save_test(test)
 
-        # Passive observations of every router in the scan.
+        # Passive observations of every router in the scan. Behind the middle router
+        # this PC's scan doesn't tell how the middle router sees them: none then.
         observations: dict[str, ScanObservation] = {}
-        if scan is not None:
+        if scan is not None and middle is None:
             for router in s.routers:
                 entry = best_entry_for(router, scan)
                 if entry is None:
@@ -406,13 +419,19 @@ class CheckEngine:
             if score is not None and data_time is not None:
                 scored[router.id] = (score, data_time)
             is_current = current is not None and router.id == current.id
+            state = router_state(router, current, answered, scan)
+            last_tested: datetime | None = None
+            if middle is not None and not is_current:
+                last_tested = self._last_tested(router.id, now)
+                state = RouterState.TESTED if last_tested else RouterState.NOT_TESTED
             statuses.append(
                 RouterStatus(
                     router=router,
-                    state=router_state(router, current, answered, scan),
+                    state=state,
                     score=score,
                     observation=obs,
                     is_current=is_current,
+                    last_tested=last_tested,
                 )
             )
             current_score = record.score if is_current and record else None
@@ -478,6 +497,7 @@ class CheckEngine:
             linked=linked,
             middle=middle,
             upstream_ip=upstream,
+            middle_suggestion=suggestion,
             confirmed_unstable=confirmed_unstable,
             recovering=recovering,
         )
@@ -495,6 +515,10 @@ class CheckEngine:
             if entry is not None:
                 return entry.rssi
         return quality_to_rssi(connection.signal_quality)
+
+    def _last_tested(self, router_id: str, now: datetime) -> datetime | None:
+        checks = self._store.checks(router_id, now - HISTORY_SPAN)
+        return checks[-1].timestamp if checks else None
 
     def _recent_jitter(self, router_id: str, now: datetime) -> float | None:
         jitters = [

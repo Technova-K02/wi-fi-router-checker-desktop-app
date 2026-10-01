@@ -10,6 +10,11 @@ router's address is learned when the app switches to it (or typed in).
 Switching asks the middle router over plain HTTP, without a login:
 ``http://<host>:<port>/change_router?router=<Wi-Fi MAC>``. Nothing else is sent
 to it, and no other router is ever contacted this way.
+
+A middle router that isn't set up yet is spotted without any HTTP: on a cable,
+the gateway isn't one of your routers and the second hop is another private
+address (a router behind a router). That's only a suggestion; nothing is sent
+to it until you confirm it with its port.
 """
 
 from __future__ import annotations
@@ -26,6 +31,9 @@ DEFAULT_PORT = 80
 UPSTREAM_HOPS = 2  # PC -> middle router (1) -> the router in use (2)
 MAX_BSSID_TRIES = 3  # Wi-Fi MACs tried per switch when the first doesn't work
 
+_PRIVATE = tuple(
+    ipaddress.IPv4Network(n) for n in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16")
+)
 _HOST = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$")
 
 
@@ -84,6 +92,45 @@ def bssid_order(
     order = [router.middle_bssid, *(e.bssid for e in seen), observed, *router.macs]
     wanted = [m for m in order if m is not None and (m in router.macs or m == router.middle_bssid)]
     return tuple(dict.fromkeys(wanted))[:MAX_BSSID_TRIES]
+
+
+def is_private_ipv4(address: str | None) -> bool:
+    """A home-network address (10.x, 172.16-31.x, 192.168.x); not the internet, and not
+    a provider's shared 100.64.x range."""
+    try:
+        ip = ipaddress.IPv4Address(address or "")
+    except ValueError:
+        return False
+    return any(ip in net for net in _PRIVATE)
+
+
+def gateway_key(gateway: GatewayInfo) -> str:
+    """What a dismissed suggestion remembers: the gateway's MAC, else its address."""
+    return str(gateway.gateway_mac) if gateway.gateway_mac else gateway.gateway_ip
+
+
+def could_be_middle(
+    gateway: GatewayInfo | None,
+    routers: Sequence[Router],
+    middle_set: bool,
+    dismissed: Sequence[str] = (),
+) -> bool:
+    """Worth looking one hop further for a middle router: on a cable, none set up, a
+    private gateway that isn't one of your routers, and not dismissed before."""
+    if gateway is None or middle_set or not gateway.wired:
+        return False
+    if not is_private_ipv4(gateway.gateway_ip) or gateway_key(gateway) in dismissed:
+        return False
+    mac = gateway.gateway_mac
+    return mac is None or not any(mac in r.macs for r in routers)
+
+
+def middle_suggestion(gateway: GatewayInfo, upstream_ip: str | None) -> str | None:
+    """The gateway's address when it looks like a middle router: the second hop is
+    another private address, so a router sits behind it. None otherwise."""
+    if is_private_ipv4(upstream_ip) and upstream_ip != gateway.gateway_ip:
+        return gateway.gateway_ip
+    return None
 
 
 def router_at(routers: Sequence[Router], address: str | None) -> Router | None:

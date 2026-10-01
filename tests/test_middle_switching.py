@@ -101,13 +101,9 @@ def test_the_plan_starts_from_the_router_the_middle_router_is_on() -> None:
     assert [(s.router.id, s.reason) for s in plan.skipped] == [("gone", SkipReason.NO_WIFI_MAC)]
 
 
-def test_routers_out_of_range_are_skipped_when_this_pc_can_scan() -> None:
+def test_what_this_pc_sees_doesnt_decide_what_the_middle_router_can_reach() -> None:
     plan = plan_middle(routers(), ZTE_ADDRESS, [entry(NB_BSSID, "Neighbor")])
-    assert [c.router.id for c in plan.to_test] == ["nb"]
-    assert (plan.skipped[-1].router.id, plan.skipped[-1].reason) == (
-        "cafe", SkipReason.NOT_IN_RANGE
-    )  # fmt: skip
-    # Without a scan (no Wi-Fi on this PC) every router with a Wi-Fi MAC is tried.
+    assert [c.router.id for c in plan.to_test] == ["nb", "cafe"]  # the Cafe isn't in the scan
     assert [c.router.id for c in plan_middle(routers(), ZTE_ADDRESS, None).to_test] == [
         "nb", "cafe"
     ]  # fmt: skip

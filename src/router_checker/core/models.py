@@ -50,6 +50,8 @@ class RouterState(StrEnum):
     VISIBLE = "Visible"  # in range, not tested
     NOT_FOUND = "Not found"  # scan worked but the router was not in it
     UNKNOWN = "Unknown"  # no location permission, so no scan
+    TESTED = "Tested"  # behind the middle router: tested through it before
+    NOT_TESTED = "Not tested"  # behind the middle router: never tested through it
 
 
 class Verdict(StrEnum):
@@ -397,3 +399,4 @@ class RouterStatus:
     observation: ScanObservation | None = None
     is_current: bool = False
     recommended: bool = False
+    last_tested: datetime | None = None  # behind the middle router: the last test

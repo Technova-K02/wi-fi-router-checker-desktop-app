@@ -1,10 +1,14 @@
 import pytest
 
-from fakes import entry, gateway_info, mac
+from fakes import cable_gateway, entry, gateway_info, mac
 from router_checker.core.middle import (
     Endpoint,
     bssid_order,
     colon_mac,
+    could_be_middle,
+    gateway_key,
+    is_private_ipv4,
+    middle_suggestion,
     parse_endpoint,
     router_at,
 )
@@ -96,3 +100,61 @@ def test_learned_details_merge_into_the_saved_router() -> None:
     merged = saved.with_linked_macs([learned]).router("zte")
     assert (merged.address, merged.middle_bssid) == ("192.168.1.1", mac(B5))
     assert saved.with_linked_macs([zte()]).router("zte") == zte()  # nothing learned: kept
+
+
+# --- spotting a middle router that isn't set up -------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("address", "private"),
+    [
+        ("192.168.8.1", True),
+        ("10.0.0.1", True),
+        ("172.16.0.1", True),
+        ("172.31.255.1", True),
+        ("172.32.0.1", False),
+        ("100.64.0.1", False),  # a provider's shared range: not your router
+        ("104.186.104.1", False),
+        ("fe80::1", False),
+        (None, False),
+        ("", False),
+    ],
+)
+def test_is_private_ipv4(address, private) -> None:
+    assert is_private_ipv4(address) is private
+
+
+ZTE = Router("zte", "ZTE", "#0078D4", "ZTE-5G", (mac(LAN), mac(B5)))
+MIDDLE_MAC = "88-88-88-88-88-88"
+
+
+def test_a_cable_into_an_unknown_private_gateway_could_be_a_middle_router() -> None:
+    gateway = cable_gateway("192.168.8.1", MIDDLE_MAC)
+    assert could_be_middle(gateway, [ZTE], middle_set=False)
+    assert not could_be_middle(gateway, [ZTE], middle_set=True)  # already set up
+    assert not could_be_middle(gateway, [ZTE], False, dismissed=(MIDDLE_MAC,))
+    assert not could_be_middle(cable_gateway("192.168.1.1", LAN), [ZTE], False)  # the ZTE
+    assert not could_be_middle(gateway_info("192.168.8.1", MIDDLE_MAC), [ZTE], False)  # Wi-Fi
+    assert not could_be_middle(cable_gateway("100.64.0.1", MIDDLE_MAC), [ZTE], False)
+    assert not could_be_middle(None, [ZTE], False)
+    assert could_be_middle(cable_gateway("192.168.8.1", None), [ZTE], False)  # MAC unknown
+
+
+def test_gateway_key_is_the_mac_or_else_the_address() -> None:
+    assert gateway_key(cable_gateway("192.168.8.1", MIDDLE_MAC)) == MIDDLE_MAC
+    assert gateway_key(cable_gateway("192.168.8.1", None)) == "192.168.8.1"
+
+
+def test_a_private_second_hop_suggests_the_gateway() -> None:
+    gateway = cable_gateway("192.168.8.1", MIDDLE_MAC)
+    assert middle_suggestion(gateway, "192.168.1.1") == "192.168.8.1"
+    assert middle_suggestion(gateway, "104.186.104.1") is None  # the provider: no router between
+    assert middle_suggestion(gateway, "100.64.0.1") is None
+    assert middle_suggestion(gateway, None) is None
+    assert middle_suggestion(gateway, "192.168.8.1") is None
+
+
+def test_dismissed_gateways_are_saved() -> None:
+    s = Settings(middle_dismissed=(MIDDLE_MAC,))
+    assert settings_from_json(settings_to_json(s)).middle_dismissed == (MIDDLE_MAC,)
+    assert settings_from_json({}).middle_dismissed == ()

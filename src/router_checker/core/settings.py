@@ -71,6 +71,7 @@ class Settings:
     auto_switch: bool = False
     connection: LinkChoice = LinkChoice.AUTO  # which adapter to check
     middle_router: str = ""  # "host:port" of your middle router; "" when there is none
+    middle_dismissed: tuple[str, ...] = ()  # gateways you said aren't a middle router
     retention_days: int = DEFAULT_RETENTION_DAYS
     check_on_network_change: bool = True
     first_run_done: bool = False
@@ -189,6 +190,7 @@ def settings_to_json(s: Settings) -> dict[str, Any]:
         "auto_switch": s.auto_switch,
         "connection": s.connection.value,
         "middle_router": s.middle_router,
+        "middle_dismissed": list(s.middle_dismissed),
         "retention_days": s.retention_days,
         "check_on_network_change": s.check_on_network_change,
         "first_run_done": s.first_run_done,
@@ -223,6 +225,8 @@ def settings_from_json(data: dict[str, Any]) -> Settings:
             kwargs[key] = bool(data[key])
     if isinstance(data.get("middle_router"), str):
         kwargs["middle_router"] = data["middle_router"].strip()
+    if isinstance(data.get("middle_dismissed"), list):
+        kwargs["middle_dismissed"] = tuple(str(k) for k in data["middle_dismissed"])
     if data.get("connection") in {c.value for c in LinkChoice}:
         kwargs["connection"] = LinkChoice(data["connection"])
     if "targets" in data:

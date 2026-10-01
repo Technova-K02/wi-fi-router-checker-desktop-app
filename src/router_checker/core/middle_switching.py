@@ -83,19 +83,16 @@ def no_way_back(router: Router) -> str:
 # --- planning ----------------------------------------------------------------------
 
 
-def _in_range(router: Router, scan: Sequence[ScanEntry]) -> bool:
-    return any(e.bssid in router.macs or (router.ssid and e.ssid == router.ssid) for e in scan)
-
-
 def plan_middle(
     routers: Sequence[Router],
     address: str | None,
     scan: Sequence[ScanEntry] | None,
     observed: Mapping[str, MacAddress] | None = None,
 ) -> TestAllPlan:
-    """Which routers the middle router can be switched to. ``address`` is the router
-    it's on now (the second hop); ``scan`` is None when this PC can't scan (then every
-    router with a Wi-Fi MAC is tried); ``observed`` the Wi-Fi MAC last seen per router."""
+    """Which routers the middle router can be switched to: every one with a Wi-Fi MAC.
+    ``address`` is the router it's on now (the second hop). ``scan`` (None when this PC
+    can't scan) and ``observed`` (the Wi-Fi MAC last seen per router) only order the
+    MACs: what this PC sees doesn't tell what the middle router can reach."""
     observed = observed or {}
     current = router_at(routers, address)
     if current is None or address is None:
@@ -111,8 +108,6 @@ def plan_middle(
         bssids = bssid_order(router, scan, observed.get(router.id))
         if not bssids:
             skipped.append(Skipped(router, SkipReason.NO_WIFI_MAC))
-        elif scan is not None and not _in_range(router, scan):
-            skipped.append(Skipped(router, SkipReason.NOT_IN_RANGE))
         else:
             to_test.append(Candidate(router, "", "", bssids))
     return TestAllPlan(origin, current, tuple(to_test), tuple(skipped))
