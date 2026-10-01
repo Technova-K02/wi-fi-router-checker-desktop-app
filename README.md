@@ -60,6 +60,15 @@ uv run python -m router_checker.ui       # with a console for log output, for de
   **Add it** on the dashboard. The score leaves out Wi-Fi signal. Test all, Switch to
   and Switch automatically are off while you're wired, since your traffic goes over
   the cable anyway. A PC without Wi-Fi works too (no location step, no scans).
+- **Middle router**: if your PC's cable goes into a router of your own that joins one
+  of your routers over Wi-Fi, and that router switches with
+  `http://<address>:<port>/change_router?router=<Wi-Fi MAC>`, enter its address and
+  port in Settings > Middle router (**Test** checks that it answers). The app then
+  finds the router in use by a ping that stops at the second hop, pings that router
+  as "the router" (and the middle router separately), and Test all, Switch to and
+  Switch automatically ask the middle router to switch. Each router's address
+  there is learned the first time the app switches to it, or typed in Add router.
+  Switching moves every device behind the middle router, not only this PC.
 - Settings > Connection: Automatic (the connection Windows uses for the internet),
   Wi-Fi only or Ethernet only. Pings always leave through the checked connection,
   so a cable doesn't carry the pings meant for Wi-Fi.
@@ -121,7 +130,8 @@ Don't run `watch` while the app is open; both would write the same settings file
 Everything stays in `%LOCALAPPDATA%\RouterChecker`: `settings.json`,
 `history.db`, `logs\app.log` and `app-icon.png` (the icon notifications show).
 While Test all is switched away from your network, `test-all-restore.json` names that
-network, so the next start can go back if the app was closed in the middle.
+network (`middle-restore.json` the router, behind a middle router), so the next start
+can go back if the app was closed in the middle.
 Both the app and the CLI accept `--data-dir` to use another folder.
 
 Outside that folder the app writes only to the current user's registry (no admin
