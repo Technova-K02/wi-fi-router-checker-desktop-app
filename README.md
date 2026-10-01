@@ -69,6 +69,12 @@ uv run python -m router_checker.ui       # with a console for log output, for de
   Switch automatically ask the middle router to switch. Each router's address
   there is learned the first time the app switches to it, or typed in Add router.
   Switching moves every device behind the middle router, not only this PC.
+  The app also spots one that isn't set up: on a cable, when the gateway isn't one
+  of your routers and another private address answers behind it, the dashboard
+  asks whether it's your middle router (**Set it up…** asks for its port, **It
+  isn't** stops asking for that router). Nothing is sent to it before you confirm.
+  Behind the middle router the other routers show their last test through it
+  (Tested / Not tested), not what this PC's Wi-Fi sees.
 - Settings > Connection: Automatic (the connection Windows uses for the internet),
   Wi-Fi only or Ethernet only. Pings always leave through the checked connection,
   so a cable doesn't carry the pings meant for Wi-Fi.
