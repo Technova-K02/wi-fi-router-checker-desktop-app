@@ -7,7 +7,8 @@ Rules (each check of the router you're on is one step):
   in a row.
 * Down: your router didn't respond, or had no internet, on ``DOWN_CHECKS`` checks
   in a row. Then the best router you can switch to is picked, even if its score
-  is only estimated: anything is better than no connection.
+  is only estimated, or unknown (behind the middle router, one never tested
+  through it): anything is better than no connection.
 * After any switch (automatic or your own), no automatic switch for ``COOLDOWN``.
 * Going back: if the check right after an automatic switch isn't OK, go back to
   the previous router at once, and don't pick the failed one again for
@@ -41,7 +42,8 @@ class CheckView:
     current_id: str | None  # the router you're on; None: not one of yours, or not connected
     verdict: Verdict | None  # of this check; None when nothing was tested
     recommendation: Recommendation | None
-    candidates: Mapping[str, Score]  # routers you could switch to right now, and their scores
+    # Routers you could switch to right now, and their scores (None: no data yet).
+    candidates: Mapping[str, Score | None]
 
 
 class Action(StrEnum):
@@ -77,6 +79,13 @@ class Progress:
     router_id: str | None
     checks: int  # of BETTER_CHECKS
     cooldown_left: timedelta | None
+
+
+def _rank(score: Score | None) -> tuple[bool, int, bool]:
+    """Scored before unknown, then higher, then measured before estimated."""
+    if score is None:
+        return (False, 0, False)
+    return (True, score.value, not score.estimated)
 
 
 class AutoSwitchPolicy:
@@ -155,9 +164,7 @@ class AutoSwitchPolicy:
                 if rid != check.current_id and not self._avoided(rid, now)
             }
             if options:
-                best = max(
-                    options, key=lambda rid: (options[rid].value, not options[rid].estimated)
-                )
+                best = max(options, key=lambda rid: _rank(options[rid]))
                 return Decision(
                     Action.SWITCH, best, check.current_id, Reason.DOWN, options[best],
                     verdict=check.verdict,

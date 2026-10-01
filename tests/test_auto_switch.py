@@ -149,3 +149,15 @@ def test_texts() -> None:
     assert auto_switch_progress(policy.progress(T0 + timedelta(minutes=5)), NAMES) == (
         "Automatic switching pauses for 25 more min after the last switch."
     )
+
+
+def test_a_router_without_data_is_picked_only_when_none_has_any() -> None:
+    down = Verdict.ROUTER_UNREACHABLE
+    policy = AutoSwitchPolicy()
+    unknown = {"nb": None, "cafe": Score(30, True)}
+    policy.observe(check(0, rec=None, verdict=down, candidates=unknown))
+    assert policy.observe(check(1, rec=None, verdict=down, candidates=unknown)).router_id == "cafe"
+    policy = AutoSwitchPolicy()  # behind the middle router before any Test all
+    policy.observe(check(0, rec=None, verdict=down, candidates={"nb": None}))
+    decision = policy.observe(check(1, rec=None, verdict=down, candidates={"nb": None}))
+    assert (decision.action, decision.router_id, decision.score) == (Action.SWITCH, "nb", None)
